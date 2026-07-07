@@ -145,17 +145,30 @@ unrecoverable from the PLY alone — no `class_ids` or queried-class-set is pers
 `src/cbf/ply_io.py`'s `ambiguous_zero_mask` / `ZeroSafetyPolicy` surfaces this rather
 than silently trusting it.
 
-**Two real Stage 2 bugs found while building this, not yet fixed** (flagged per the
-Rules section in `CLAUDE.md`, since Stage 2 was believed not to need changes):
-1. `vlm_safety_score.py`'s `SemanticDecoder` (`nn.Linear(16,256)`) has different
-   state_dict keys than the actually-trained classifier (`src/Decoder.py`'s
-   `nn.Conv2d(16,256,kernel_size=1)`), so `load_state_dict(..., strict=False)` silently
-   loads nothing — today's per-splat class assignment (and thus every safety score) is
-   effectively random, not semantically meaningful.
-2. `vlm_safety_score.py` calls `glob.glob(...)` without `import glob` — a `NameError`
-   at runtime as currently written.
+**Two real Stage 2 bugs found while building this — now fixed** (flagged per the Rules
+section in `CLAUDE.md`, since Stage 2 was believed not to need changes; fixed in a
+dedicated follow-up session scoped to exactly these two bugs, see `PROGRESS.md`):
+1. `vlm_safety_score.py`'s `SemanticDecoder` used to be a from-scratch `nn.Linear(16,256)`
+   with different state_dict keys than the actually-trained classifier
+   (`src/Decoder.py`'s `nn.Conv2d(16,256,kernel_size=1)`), so `load_state_dict(...,
+   strict=False)` silently loaded nothing. Fixed by importing `src.Decoder.SemanticDecoder`
+   directly instead of reimplementing it, reshaping the flat `(N,16)` per-splat tensor to
+   `(N,16,1,1)` to reuse the 1x1-conv architecture correctly (no spatial mixing, so this
+   is mathematically identical to the per-pixel `(C,H,W)` case it's normally used in —
+   `src/Evaluater.py`, `src/Loss.py`), and changing `strict=False` to `strict=True`.
+2. `vlm_safety_score.py` called `glob.glob(...)` without `import glob` — fixed.
 
-A real ("Phase B") evaluation of the open weighting question is blocked on bug (1).
+**Verification caveat:** no real `classifier.pth`/`gsplat.ply`/`params.npz` exists
+anywhere on the machine the fix was made on (confirmed by an explicit search — see
+`PROGRESS.md`), and that machine also has no torch/CUDA available, so the fix could only
+be verified statically (same class + same constructor args as the code that saved
+`classifier.pth`, guaranteeing key match by construction) plus a written-but-unexecuted
+regression test (`tests/test_semantic_decoder_load.py`). A real dynamic check — and a
+real Phase B evaluation of the open weighting question below — remain blocked on a real
+Stage 1/2 run existing somewhere, not on this bug anymore. Separately, incidentally
+found: `src/Decoder.py`'s `SemanticDecoder.__init__` hardcodes `.cuda()`, so it can only
+ever be constructed on a CUDA-capable machine — harmless on the real A2000 dev box, but
+worth knowing if anyone tries to run Stage 2 code on a CPU-only machine.
 
 ## 3. Design history — why v2 replaced v1
 

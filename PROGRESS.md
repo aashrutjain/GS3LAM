@@ -142,32 +142,68 @@ a **synthetic smoke test**, not a real-scene run:
 6. **Confirm the actual TurtleBot4 footprint radius** (`configs/cbf/room0_cbf.py`'s
    `robot_radius=0.16` is a placeholder) before trusting Minkowski-inflation results.
 
-## Two Stage 2 bugs found while building this (not fixed — out of scope for Stage 3)
+## Two Stage 2 bugs found while building this — now fixed
 
 Found while confirming the exact `safety_gsplat.ply` schema against the code that
-writes it. Both are in `vlm_safety_score.py`, flagged per `CLAUDE.md`'s rule that
-Stage 2 "should not need structural changes" — this isn't a structural change, it's a
-correctness bug, worth a deliberate decision about whether/when to fix:
+writes it. Both were in `vlm_safety_score.py`; fixed in a dedicated Stage-2-only session
+per `CLAUDE.md`'s rule that Stage 2 "should not need structural changes" (this was a
+correctness fix, not a structural one):
 
-1. **Classifier weights never load.** `SemanticDecoder` in `vlm_safety_score.py:34-40`
-   is `nn.Linear(16, 256)`, with state_dict keys `linear.weight`/`linear.bias`. The
-   classifier actually trained and saved as `classifier.pth`
-   (`src/Decoder.py:29-38`/`src/GS3LAM.py:103,492`) is `nn.Conv2d(16, 256,
-   kernel_size=1)`, keys `conv.weight`/`conv.bias`. `load_state_dict(state_dict,
-   strict=False)` (`vlm_safety_score.py:57`) silently loads nothing because no keys
-   match — today's per-splat `class_ids` come from a randomly-initialized `nn.Linear`,
-   not the trained decoder. **This means any `safety_gsplat.ply` produced today has
-   semantically meaningless safety scores** — a real blocker for a Phase B (real-data)
-   Stage 3 evaluation, though not for Phase A (synthetic sanity check) or for testing
-   the CBF math itself.
-2. **Missing import.** `vlm_safety_score.py:99` calls `glob.glob(...)` but never
-   `import glob` — will raise `NameError` at runtime as currently written.
+1. **Classifier weights never loaded — fixed.** `SemanticDecoder` in
+   `vlm_safety_score.py` used to be a from-scratch `nn.Linear(16, 256)` with state_dict
+   keys `linear.weight`/`linear.bias`. The classifier actually trained and saved as
+   `classifier.pth` (`src/Decoder.py:29-38`/`src/GS3LAM.py:103,492`) is
+   `nn.Conv2d(16, 256, kernel_size=1)`, keys `conv.weight`/`conv.bias`. Fixed by deleting
+   the reimplementation and importing `src.Decoder.SemanticDecoder` directly, so the two
+   can never drift apart again. Since the trained decoder is a 1x1 conv applied to
+   per-pixel `(C,H,W)` feature maps in normal use (`src/Evaluater.py:174-175`,
+   `src/Loss.py:91`) but Stage 2 has flat per-splat `(N,16)` vectors, the fix reshapes to
+   `(N,16,1,1)` before the forward pass and squeezes the `(N,256,1,1)` logits back down
+   — mathematically identical to the per-pixel case since a 1x1 conv does no spatial
+   mixing. Also changed `load_state_dict(state_dict, strict=False)` to `strict=True`, so
+   a key mismatch is now structurally impossible to pass silently.
+2. **Missing import — fixed.** `vlm_safety_score.py` called `glob.glob(...)` without
+   `import glob`; the import is now present.
 
-Recommended fix (not applied): change `SemanticDecoder` to match `src/Decoder.py`'s
-architecture (or import/reuse that class directly), add `import glob`, and — while
-touching this file — consider changing `broadcast_scores_and_save`'s
-`np.zeros(num_points, ...)` default to `np.full(..., np.nan)` plus persisting
-`class_ids` alongside `safety` in the output PLY, so a future loader *could*
-distinguish "genuinely scored 0.0" from "never scored." That last change is a splat-schema
-change and should be flagged/confirmed with Aashrut before doing it, per `CLAUDE.md`'s
-rule on schema changes.
+**Verification is partial, not complete — flagging honestly rather than overclaiming:**
+this fix session's sandbox has no torch installed at all and no conda/GPU environment
+anywhere on the machine (same constraint noted in "Not done" item 4 below). Worse,
+`src/Decoder.py:33`'s `SemanticDecoder.__init__` hardcodes `.cuda()` in its constructor,
+so even a CPU-only torch install couldn't construct the real class to dynamically test
+`load_state_dict` there — construction fails before key-matching is ever exercised. So:
+- What's confirmed: by code inspection, `vlm_safety_score.py` now instantiates the
+  *exact same class* with the *exact same constructor args* (`16, 256`) that
+  `src/GS3LAM.py` used to create and save `classifier.pth` — both produce
+  `conv.weight`/`conv.bias` keys by construction. The file parses cleanly
+  (`python3 -m py_compile vlm_safety_score.py`).
+- What's not confirmed: no real `classifier.pth` exists anywhere on this machine (see
+  "real Stage 1 output search" below), so the corrected loader has never actually been
+  run against real trained weights.
+- A regression test exists at `tests/test_semantic_decoder_load.py` (constructs
+  `src.Decoder.SemanticDecoder` twice, round-trips a state_dict with `strict=True`,
+  asserts no missing/unexpected keys) but has **not been executed** — it needs a
+  CUDA-capable environment because of the `.cuda()` issue above. Run it once GPU access
+  is available; until then this is a TODO, not a silently-skipped step.
+
+**New finding not in the original two bugs:** `src/Decoder.py:33` hardcodes `.cuda()` in
+`SemanticDecoder.__init__`, unconditionally, regardless of the caller's intended device.
+On the real dev machine (A2000 GPU, per `CLAUDE.md`) this is harmless, but it means the
+module can never be constructed on a CPU-only machine — including this sandbox, which
+blocked dynamic verification above. Not fixed here (out of the two-bug scope, and
+`src/Decoder.py` wasn't touched, only imported from) — logged as a TODO for whoever next
+has GPU access.
+
+**Real Stage 1 output search (requested this session):** searched this repo (`logs/`
+and `data/` don't exist in this checkout), the entire `/mnt/c/Users/jaina7/projects` tree,
+the WSL home directory, and `~/miniconda3/envs` (empty — no conda envs exist on this
+machine at all). **No real `gsplat.ply`, `params.npz`, `classifier.pth`, or
+`safety_gsplat.ply` exists anywhere on this machine.** This is an explicit negative
+result, not an assumption — there is currently no real Stage 1/2 output in existence to
+run the corrected decoder against, so no live class-assignment sanity check was
+possible.
+
+Deliberately not done in this fix (per explicit instruction, flagged rather than
+silently applied): changing `broadcast_scores_and_save`'s `np.zeros(num_points, ...)`
+default to `np.full(..., np.nan)` plus persisting `class_ids` alongside `safety` in the
+output PLY. That's a splat-schema change per `CLAUDE.md`'s rule and needs a deliberate
+decision from Aashrut, not a silent fix alongside a bug fix.

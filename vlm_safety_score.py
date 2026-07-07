@@ -6,6 +6,7 @@ import base64
 import json
 import os
 import io
+import glob
 import PIL.Image
 from plyfile import PlyData, PlyElement
 import numpy.lib.recfunctions as rfn
@@ -14,6 +15,8 @@ import torch
 import torch.nn as nn
 import numpy as np
 from plyfile import PlyData
+
+from src.Decoder import SemanticDecoder as TrainedSemanticDecoder
 
 # Modern SDK
 from google import genai
@@ -31,13 +34,11 @@ CLASSIFIER_PATH = "logs/Replica/room0_seed1/260422-13:33:16/classifier.pth"
 TUM_RGB_DIR = "data/Replica/room0/results/"
 OUTPUT_PLY_PATH = "logs/Replica/room0_seed1/260422-13:33:16/safety_gsplat.ply"
 
-class SemanticDecoder(nn.Module):
-    def __init__(self, in_channels=16, out_channels=256):
-        super().__init__()
-        self.linear = nn.Linear(in_channels, out_channels)
-        
-    def forward(self, x):
-        return self.linear(x)
+# Must match configs/Replica/room0.py's semantic.num_objects/num_classes — these are
+# the exact args src/GS3LAM.py:103 used to build the classifier that was trained and
+# saved as classifier.pth.
+SEMANTIC_IN_CHANNELS = 16
+SEMANTIC_OUT_CHANNELS = 256
 
 def load_and_classify_splats():
     print("Loading 3D Gaussians and Classifier...")
@@ -49,29 +50,35 @@ def load_and_classify_splats():
     z = np.asarray(plydata.elements[0].data['z'])
     points_3d = np.vstack((x, y, z)).T
     
-    # Setup the PyTorch Classifier
+    # Setup the PyTorch Classifier — reuse the actual trained architecture (src/Decoder.py)
+    # instead of reimplementing it, so the state_dict keys can never silently drift again.
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    classifier = SemanticDecoder().to(device)
-    
+    classifier = TrainedSemanticDecoder(SEMANTIC_IN_CHANNELS, SEMANTIC_OUT_CHANNELS).to(device)
+
     state_dict = torch.load(CLASSIFIER_PATH, map_location=device)
-    classifier.load_state_dict(state_dict, strict=False)
+    classifier.load_state_dict(state_dict, strict=True)
     classifier.eval()
-    
+
     # Extract the 16 Semantic Features from params.npz
     print("Loading semantic features from params.npz...")
     params = np.load(PARAMS_PATH)
     semantic_features = params['obj_dc']
-    
+
     # Flatten the extra spherical harmonic dimension if it exists (e.g., N, 1, 16 -> N, 16)
     if len(semantic_features.shape) == 3:
         semantic_features = semantic_features.squeeze(1)
-        
+
     # Push through the model to get the true Class IDs
     print("Decoding latent semantic vectors into discrete Class IDs...")
     semantic_tensor = torch.tensor(semantic_features, dtype=torch.float32).to(device)
-    
+
     with torch.no_grad():
-        logits = classifier(semantic_tensor)
+        # The trained decoder is a 1x1 conv over per-pixel (C,H,W) feature maps in normal
+        # use (src/Evaluater.py, src/Loss.py). A 1x1 conv has no spatial mixing, so it's
+        # mathematically a per-vector linear map — reshape (N,16) -> (N,16,1,1) to reuse it
+        # correctly per splat, then squeeze the logits back to (N,256).
+        conv_input = semantic_tensor.view(-1, SEMANTIC_IN_CHANNELS, 1, 1)
+        logits = classifier(conv_input).view(-1, SEMANTIC_OUT_CHANNELS)
         class_ids = torch.argmax(logits, dim=1).cpu().numpy()
         
     unique_classes_found = np.unique(class_ids)
