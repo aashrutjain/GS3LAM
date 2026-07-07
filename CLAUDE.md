@@ -11,14 +11,15 @@ A semantic Gaussian Field pipeline for risk-aware robot navigation (RISL, RPI).
 VLM-derived per-object safety scores are grafted onto a 3D Gaussian Splatting map,
 with the eventual goal of driving a Control Barrier Function on a TurtleBot4.
 
-**Current milestone:** Stage 3 — costmap + CBF integration, now partially built. The
-`src/cbf/` library (collision-cone CBF-QP filter, both semantic-weighting strategies,
-spatial prefilter, sim/metrics harness) exists; `eval_cbf_modes.py` (the actual 3-mode
-comparison experiment) and a pinned QP-solver dependency choice do not yet. See
-`PROGRESS.md` for exact file-by-file status and `ARCHITECTURE.md` §2.3 for the design.
-Stages 1 (GS3LAM semantic splatting) and 2 (hero-frame VLM safety scoring) are
-functional and should not need structural changes — though see §2.3/`PROGRESS.md` for
-two real Stage 2 bugs found while building Stage 3 (not yet fixed).
+**Current milestone:** Stage 3 — costmap + CBF integration, now mostly built and
+smoke-tested on a synthetic scene (no real safety_gsplat.ply exists in this checkout
+yet). The `src/cbf/` library, `costmap_cbf.py`, and `eval_cbf_modes.py` (the 3-mode
+comparison harness) all exist and run; a pinned QP-solver choice and a real unit test
+suite do not yet. See `PROGRESS.md` for exact status, including a real dtype bug found
+and fixed in the solver path, and `ARCHITECTURE.md` §2.3 for the design. Stages 1
+(GS3LAM semantic splatting) and 2 (hero-frame VLM safety scoring) are functional and
+should not need structural changes — though see §2.3/`PROGRESS.md` for two real Stage
+2 bugs found while building Stage 3 (not yet fixed).
 
 ## Environment
 
@@ -39,7 +40,9 @@ two real Stage 2 bugs found while building Stage 3 (not yet fixed).
   `PROGRESS.md`)
 - Stage 3 online single-step filter demo: `python costmap_cbf.py --config
   configs/cbf/room0_cbf.py --ply-path <path/to/safety_gsplat.ply>`
-- Stage 3 CBF/costmap 3-mode eval (not yet built): `TODO` — see `PROGRESS.md`
+- Stage 3 CBF/costmap 3-mode eval: `python eval_cbf_modes.py --config
+  configs/cbf/room0_cbf.py --ply-path <path/to/safety_gsplat.ply> --phase-a` (drop
+  `--phase-a` once Stage 2 bug in `PROGRESS.md` is fixed and scores are meaningful)
 
 ## Data contracts
 
@@ -65,4 +68,4 @@ Don't change these shapes without updating `ARCHITECTURE.md` §2 to match.
   unresolved, not a settled design (both candidate strategies are implemented as
   swappable modes in `src/cbf/`, to be compared experimentally, not decided a priori).
 - Don't pull in new SLAM backbones, VLM distillation, or world-model components without
-  being asked. They're logged as future work in `ARCHITECTURE.md` §7, not current scope.
+  being asked. They're logged as future work in `ARCHITECTURE.md` §5, not current scope.

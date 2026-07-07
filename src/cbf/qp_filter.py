@@ -101,10 +101,18 @@ def _max_braking(v: np.ndarray, a_max: float) -> np.ndarray:
 
 
 def _clip_to_a_max(u: np.ndarray, a_max: float) -> np.ndarray:
+    """Dtype-preserving: used both on float32 result arrays and, inside the
+    float64-cast solver path, on the float64 x0 seed -- an earlier version
+    hardcoded .astype(np.float32) here, which silently downcast the SLSQP
+    initial guess back to float32 while every other solver array had been
+    promoted to float64, crashing the Fortran backend ("expected elsize=8
+    but got 4") on the very first step whose reference control exceeded
+    a_max.
+    """
     norm = float(np.linalg.norm(u))
     if norm <= a_max or norm < 1e-12:
         return u
-    return (u * (a_max / norm)).astype(np.float32)
+    return (u * (a_max / norm)).astype(u.dtype)
 
 
 def _solve_scipy_slsqp(
@@ -114,6 +122,12 @@ def _solve_scipy_slsqp(
     k_alpha_active: np.ndarray,
     a_max: float,
 ) -> tuple[np.ndarray, bool, dict]:
+    # SLSQP's Fortran backend requires float64 throughout (jac/constraint arrays must be
+    # elsize=8); everything upstream is float32, so cast once here at the solver boundary.
+    u_ref = u_ref.astype(np.float64)
+    w_active = w_active.astype(np.float64)
+    h_active = h_active.astype(np.float64)
+    k_alpha_active = k_alpha_active.astype(np.float64)
     rhs = 0.5 * k_alpha_active * h_active  # (n_active,)
 
     def objective(u):
@@ -184,6 +198,30 @@ class CBFSafetyFilter:
                 f"opacity_prune_thresh={cfg.spatial_filter.opacity_prune_thresh} pruned every "
                 "splat -- check the threshold or the loaded scene."
             )
+
+    @property
+    def xyz(self) -> np.ndarray:
+        """Opacity-pruned splat means this filter was built against."""
+        return self._xyz
+
+    @property
+    def A(self) -> np.ndarray:
+        """Per-splat A=Sigma^-1 for the pruned set, under this filter's semantic_mode."""
+        return self._A
+
+    @property
+    def s_min(self) -> np.ndarray:
+        """Per-splat smallest true scale for the pruned set, under this filter's semantic_mode."""
+        return self._s_min
+
+    @property
+    def c_base(self) -> float:
+        """sqrt(chi2_conf), pre-Minkowski-inflation confidence radius."""
+        return self._c_base
+
+    @property
+    def robot_radius(self) -> float:
+        return self._cfg.robot_radius
 
     def step(self, state: RobotState, u_ref: np.ndarray) -> SafetyFilterResult:
         cand_local = select_candidates(state.p, state.v, self._tree, self._cfg.spatial_filter)

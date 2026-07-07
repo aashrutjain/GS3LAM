@@ -23,11 +23,11 @@ Three sub-questions structure the project:
 
 ## 2. Pipeline overview
 
-Three stages. The third is the current, unbuilt focus.
+Three stages. The third is the current focus — mostly built and smoke-tested, see 2.3.
 
 1. **Semantic Gaussian Splatting** (done) — GS3LAM produces a semantically labeled 3DGS map.
 2. **VLM Safety Rating via Hero Frames** (done) — per-object safety scores grafted onto the splats.
-3. **Costmap + CBF Tuning** (in progress) — the safety-annotated map drives a real CBF on a TurtleBot4.
+3. **Costmap + CBF Tuning** (mostly built) — the safety-annotated map drives a real CBF on a TurtleBot4.
 
 ### 2.1 Stage 1 — GS3LAM
 
@@ -65,7 +65,7 @@ from v1. Note Replica still has holes in under-mapped regions — not perfect gr
 VLM latency is 1–3s/call, but it's offline and per-object, not per-frame, so it doesn't
 touch the control loop.
 
-### 2.3 Stage 3 — Costmap + CBF (current focus, not yet built)
+### 2.3 Stage 3 — Costmap + CBF (current focus, mostly built)
 
 **Chosen geometric primitive:** Tscholl, Nakka & Gunter, "Perception-Integrated Safety
 Critical Control via Analytic Collision Cone Barrier Functions on 3D Gaussian
@@ -89,14 +89,20 @@ Candidates, neither validated:
 
 Do not treat either of these as decided. Resolving this is the point of Stage 3.
 
-**Module status (partial — see `PROGRESS.md` for exact state):** the geometric CBF-QP
-library exists at `src/cbf/`, with both weighting strategies above implemented as
-swappable `SemanticMode` options over a shared `SemanticMode.NONE` baseline that never
-reads the `safety` column. Not yet built: `eval_cbf_modes.py` (the actual 3-mode
-comparison experiment that would start resolving the open question above), a pinned
-QP-solver dependency (currently a `scipy.optimize.SLSQP` stopgap behind an abstract
-`CBFQPConfig.solver` string — see `src/cbf/qp_filter.py`'s module docstring), and the
-ROS2/TurtleBot4 node itself (the seam for it exists at `src/cbf/interfaces.py`).
+**Module status (see `PROGRESS.md` for exact state):** the geometric CBF-QP library
+exists at `src/cbf/`, with both weighting strategies above implemented as swappable
+`SemanticMode` options over a shared `SemanticMode.NONE` baseline that never reads the
+`safety` column, plus `eval_cbf_modes.py`, the 3-mode comparison harness. Smoke-tested
+against a synthetic scene (no real Stage 1/2 output exists in this checkout yet) — the
+collision-cone math was confirmed to match an independent hand calculation, and a real
+dtype bug in the QP solver path was found and fixed in the process (see `PROGRESS.md`).
+`ALPHA_SCALE` vs `NONE` behaved exactly as predicted (same path, slower approach);
+`COV_INFLATE`'s behavior in that synthetic scene is a real open finding, not yet
+disambiguated from a possible gain-tuning artifact — see `PROGRESS.md`. Not yet built:
+a pinned QP-solver dependency (currently a `scipy.optimize.SLSQP` stopgap behind an
+abstract `CBFQPConfig.solver` string — see `src/cbf/qp_filter.py`'s module docstring),
+a real (non-ad-hoc) unit test suite, and the ROS2/TurtleBot4 node itself (the seam for
+it exists at `src/cbf/interfaces.py`).
 
 Module layout:
 ```
@@ -113,7 +119,7 @@ src/cbf/
     sim.py                   # trajectory rollout harness
 configs/cbf/room0_cbf.py    # scene config (mirrors configs/Replica/room0.py style)
 costmap_cbf.py               # top-level: online single-step filter demo (the ROS2-facing piece)
-eval_cbf_modes.py            # top-level: 3-mode comparison harness — NOT YET BUILT
+eval_cbf_modes.py            # top-level: 3-mode comparison harness
 ```
 
 **Exact math implemented** (Tscholl, Nakka & Gunter, arXiv:2509.14421; the paper's

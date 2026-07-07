@@ -1,14 +1,16 @@
 # Stage 3 Implementation Progress
 
-Snapshot written mid-implementation (context budget ran low) so work can resume
-cleanly. See `ARCHITECTURE.md` §2.3 for the design/math this implements, and the
-original design plan (from the planning session) for the full rationale behind every
-choice below.
+See `ARCHITECTURE.md` §2.3 for the design/math this implements, and the original
+design plan (from the planning session) for the full rationale behind every choice
+below. As of this update, the full `src/cbf/` library plus both entry scripts exist
+and have been smoke-tested against a synthetic scene (see "Verification done" below)
+— this is further along than the previous snapshot of this file, which was written
+before `eval_cbf_modes.py` existed and before anything had been run.
 
 ## Done
 
-All of these exist and are believed correct by construction/inspection, but **none
-have been executed or unit-tested yet** — see "Not done" below.
+All of the below exist. Everything except item (3) in "Not done" has now actually been
+run at least once against a synthetic scene (see "Verification done").
 
 - `src/cbf/__init__.py` — empty package marker.
 - `src/cbf/interfaces.py` — `RobotState`, `SafetyFilterResult`, `SafetyFilter` protocol.
@@ -53,42 +55,91 @@ have been executed or unit-tested yet** — see "Not done" below.
 - `costmap_cbf.py` — top-level CLI: loads a config + PLY, builds a `CBFSafetyFilter`,
   runs one `step()` with CLI-supplied `p`/`v`/`u_ref`, prints the result. This is the
   piece a future ROS2 node lifts the outer loop out of.
+- `eval_cbf_modes.py` — the 3-mode comparison harness. Verifies start/goal against the
+  baseline geometry, runs a `PassthroughFilter` oracle (CBF disabled) for the
+  time-to-goal denominator, then runs `NONE`/`ALPHA_SCALE`/`COV_INFLATE` through
+  `src/cbf/sim.rollout()` and prints a metrics table. `--phase-a` overrides the loaded
+  safety column with a single synthetic hazard on the start→goal line
+  (`synthesize_hazard_safety()`) for the sanity check described in `ARCHITECTURE.md`
+  §2.3, ahead of any real-scene run.
+- `requirements.txt` / `environment.yml` — added `scipy` (used by
+  `spatial_filter.py`'s `cKDTree`, `qp_filter.py`'s `scipy.optimize.minimize` and
+  `scipy.stats.chi2`). Pure-Python, no CUDA interaction — should not conflict with the
+  pinned `cudatoolkit-dev=11.7.0` env, but this has only been confirmed by import, not
+  by installing into that actual pinned conda env (which isn't present on this
+  machine — see "Verification done").
 - `ARCHITECTURE.md` §2.3 and `CLAUDE.md` updated to reflect the above (module layout,
   exact math, confirmed data-contract gotchas, and the two Stage 2 bugs found below).
 
+## Verification done
+
+No real `safety_gsplat.ply` exists in this checkout (no Stage 1 training run has been
+done here), and this machine has no conda/GPU env — only system Python with
+numpy/scipy present and `plyfile` pip-installed for testing. So verification so far is
+a **synthetic smoke test**, not a real-scene run:
+
+- Built a synthetic `safety_gsplat.ply` matching the exact schema (300 background
+  splats + 1 obstacle splat, isotropic scale, unnormalized identity quaternion).
+- Unit-level checks, all passing: the loader reads the file correctly;
+  `ellipsoid.build_sigma` on an isotropic splat matches a hand-computed `scale² · I`;
+  `build_baseline_inputs` is confirmed to produce byte-identical output whether
+  `safety_raw` is real data or `NaN` (the baseline-never-reads-safety contract);
+  `compute_collision_cones`'s `h` value for a robot heading straight at the obstacle
+  **exactly matches an independent hand-computed value** (`h = β·γ − δ² = -119.456`),
+  confirming the Eq 9/13 math was transcribed correctly; a receding trajectory
+  correctly does not activate the cone.
+- Found and fixed a real bug: `qp_filter._clip_to_a_max()` hardcoded
+  `.astype(np.float32)` on its clipped branch. The SLSQP solver path casts all its
+  inputs to `float64` (SciPy's Fortran backend requires it), but `_clip_to_a_max` is
+  also used to build the solver's `x0` seed from `u_ref` — so any step where the
+  reference control exceeded `a_max` (i.e. almost every real step) silently downcast
+  `x0` back to `float32`, crashing with `ValueError: failed to initialize
+  intent(inout) array -- expected elsize=8 but got 4`. Fixed to preserve the input
+  dtype (`u.dtype`) instead. This would have broken on literally the first real
+  rollout — worth a regression test before this is considered done (see "Not done").
+- Ran `eval_cbf_modes.py --phase-a` end-to-end on the synthetic scene. Qualitative
+  result matched the design's theoretical prediction: `ALPHA_SCALE` reached the goal
+  on essentially the same path as `NONE` (`path_length_ratio` 1.08 vs 1.09) but ~3x
+  slower (`time_ratio` 3.27 vs 1.21) — i.e. purely longitudinal braking, no rerouting,
+  exactly as predicted. `COV_INFLATE` behaved very differently (didn't reach the goal
+  within `max_steps` at `gamma∈{0.3, 1.0}` in this scene), consistent with it changing
+  the actual routing geometry rather than just the approach speed — but in this
+  particular synthetic layout (background clutter placed close to the inflated
+  hazard's footprint) the inflated ellipsoid seems to leave too little lateral
+  clearance for the QP to route around within the step budget. Not yet determined
+  whether that's "COV_INFLATE correctly refusing an unsafe corridor" or "the CBF's
+  fixed `k_alpha_base` producing an overly-conservative asymptotic crawl regardless of
+  obstacle geometry" (a step-by-step trace showed velocity monotonically decaying
+  toward near-zero rather than the robot stopping or oscillating) — this needs a wider
+  synthetic corridor and/or a `k_alpha_base` sweep to disambiguate, not more staring at
+  this one scene. Flagging as a real open finding, not a known bug.
+
 ## Not done — pick up here
 
-1. **`eval_cbf_modes.py`** — the actual 3-mode comparison harness (the experiment that
-   answers the open research question). Design is fully specified in the plan/
-   `ARCHITECTURE.md` §2.3: pick a verified collision-free start/goal on a real
-   `room0` scene, run an oracle (CBF disabled) for the time-to-goal denominator, then
-   run `NONE`/`ALPHA_SCALE`/`COV_INFLATE` through `src/cbf/sim.rollout()` and tabulate
-   `collision_severity`/`near_miss_events`/`path_efficiency` for each, plus solver
-   infeasibility counts and wall-clock/step. Needs a **Phase A synthetic-hazard sanity
-   run first** (hand-edit one splat's `safety` to ~0.1 directly on the collision path,
-   everything else ~1.0) before trusting any real-scene numbers — real-scene numbers
-   are blocked on Stage 2 bug (1) below anyway.
-2. **`scipy` is not yet added to `requirements.txt`/`environment.yml`.** `src/cbf`
-   imports `scipy.spatial.cKDTree`, `scipy.optimize.minimize`, and `scipy.stats.chi2`.
-   It's transitively present in the current env (confirmed importable) but not a
-   direct pinned dependency — add it, and sanity-check it doesn't conflict with the
-   pinned `cudatoolkit-dev=11.7.0` env (should be fine, pure-Python/no CUDA
-   interaction, but confirm rather than assume).
-3. **No code in `src/cbf/` has been run yet.** Nothing has been executed against a
-   real `safety_gsplat.ply` — there's no confirmed-real PLY path to point at (Stage 1
-   training run output isn't in this checkout). Before trusting any of the above:
-   - Unit test `build_baseline_inputs`: assert identical output whether
-     `splats.safety_raw` is `None` or garbage (the baseline-never-reads-safety
-     contract).
-   - Unit test `ellipsoid.build_sigma` against a hand-computed isotropic case (matches
-     Replica's actual default) and one hand-picked anisotropic case.
-   - Run `costmap_cbf.py` against a real `safety_gsplat.ply` once one exists, and watch
-     for the `zero_fraction` warning from `ply_io.py` — expect it to be large today
-     given Stage 2 bug (1).
-4. **Measure the real `room0` scene's bounding box** and revisit the placeholder
+1. **Disambiguate the `COV_INFLATE` slow-convergence finding above.** Re-run
+   `eval_cbf_modes.py --phase-a` with (a) background splats moved further from the
+   hazard (wider corridor) and (b) a `k_alpha_base` sweep, to determine whether the
+   observed near-halt is a legitimate "no safe corridor" outcome or an artifact of a
+   too-small fixed gain interacting with multiple simultaneous active constraints.
+2. **No real `safety_gsplat.ply` has been used.** Everything above ran against a
+   hand-built synthetic PLY, not real Stage 1/2 output — there's no confirmed-real PLY
+   path to point at in this checkout. Once one exists: run `costmap_cbf.py` against it
+   and watch for the `zero_fraction` warning from `ply_io.py` (expect it to be large,
+   given Stage 2 bug (1) below), then run `eval_cbf_modes.py` without `--phase-a` for
+   the (currently not-yet-meaningful, per that same bug) Phase B numbers.
+3. **No formal unit test suite** — the checks in "Verification done" were ad hoc
+   scripts run manually, not committed as `pytest`/`unittest` cases. Worth turning
+   `build_baseline_inputs`' safety-blindness check and `ellipsoid.build_sigma`'s
+   isotropic hand-computation into a real `tests/` module, especially since the
+   `_clip_to_a_max` dtype bug above shows the solver path wasn't exercised until now.
+4. **`scipy` has not been confirmed inside the actual pinned `cudatoolkit-dev=11.7.0`
+   conda env** — only confirmed importable/installable in this machine's plain system
+   Python, which has no CUDA/conda setup at all. Low risk (pure-Python package) but
+   still unconfirmed in the environment CLAUDE.md flags as deliberately fragile.
+5. **Measure the real `room0` scene's bounding box** and revisit the placeholder
    `spatial_filter` radius/max_candidates defaults in `configs/cbf/room0_cbf.py`
    accordingly.
-5. **Confirm the actual TurtleBot4 footprint radius** (`configs/cbf/room0_cbf.py`'s
+6. **Confirm the actual TurtleBot4 footprint radius** (`configs/cbf/room0_cbf.py`'s
    `robot_radius=0.16` is a placeholder) before trusting Minkowski-inflation results.
 
 ## Two Stage 2 bugs found while building this (not fixed — out of scope for Stage 3)

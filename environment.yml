@@ -25,3 +25,4 @@ dependencies:
     - torchmetrics
     - cyclonedds
     - plyfile==0.8.1
+    - scipy

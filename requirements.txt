@@ -13,3 +13,4 @@ torchmetrics
 cyclonedds
 pytorch-msssim
 plyfile==0.8.1
+scipy
