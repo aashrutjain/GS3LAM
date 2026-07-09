@@ -52,7 +52,7 @@ before lab access returns.
 | Introduction | Fully finished | Contributions must be stated as what's actually built/verified, not "demonstrated on TurtleBot4" (see Contributions below). |
 | Experimental Protocol | Fully finished, as protocol | What will be measured and how, not what was found. Writing this precisely now is real work — it's what prevents figuring out what counts as a result after the fact. |
 | Results — synthetic validation | Real, partial content | The Phase-A synthetic sanity check (collision-cone math verified, `ALPHA_SCALE` behaving as predicted) is legitimate content, framed explicitly as synthetic validation of the implementation, not a navigation result. |
-| Results — VLM score reliability | Available this summer, not yet done | No GPU needed. See "This Summer's Remaining Experimental Work" below. Should be run before this section is finalized. |
+| Results — VLM score reliability | Done (2026-07-09) | See item 1 under "This Summer's Remaining Experimental Work" below for the finding. Ran on stock-photo proxies, not real Replica hero-frames — see Gap Tracking. |
 | Results — real-world / real-robot | Blocked until fall | Needs real Stage 1/2 output and lab/GPU access. Do not draft as if this exists. |
 | Abstract, Discussion, Conclusion | Drafted now, revised once real numbers exist | Skeleton now; light revision pass in fall. |
 
@@ -158,13 +158,32 @@ These are real experiments, not writing tasks, and neither needs a GPU, TurtleBo
 real Stage 1/2 output. Prioritize these alongside the writing, not after it — the first
 one in particular determines how strong the paper's empirical foundation is.
 
-1. **VLM safety-score consistency check.** Pick 8–10 objects spanning a safety
-   gradient. Query the existing safety-auditor prompt against Gemini (ideally also one
-   other VLM) 5+ times each at temperature > 0. Compute per-object variance. This
-   directly tests the paper's "Translation" premise (can a VLM's judgment collapse
-   into a stable scalar) and is currently completely untested. Low variance
-   strengthens the whole pipeline's foundation; high variance is itself a real,
-   citable finding and should shape the Discussion/Limitations section.
+1. **VLM safety-score consistency check — done (2026-07-09).** Ran the existing
+   safety-auditor prompt (`vlm_safety_score.py`'s `query_vlm_safety()`, reused
+   verbatim, no rewriting) against 10 stock object images spanning an intended safety
+   gradient (wall, heavy bookshelf, cushion, yoga mat, wooden chair, potted plant,
+   vase, glass, cable, knife — see `assets/vlm_consistency/images/`), 5 queries each
+   at temperature=0.2 (matching production's exact call config), via a standalone
+   script (`vlm_consistency_check.py`, does not touch `src/cbf/`). A second VLM was
+   skipped — no `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` configured this session; doing so
+   needs one of those keys plus the corresponding SDK.
+   **Finding:** within-object variance was zero for 9 of 10 objects — identical score
+   across all 5 runs each. The sole exception was the object intended as the most
+   obviously-safe baseline (a plain wall), which flipped bimodally between exactly 0.0
+   and 1.0 across runs (mean 0.4, std 0.55) rather than settling near a continuous
+   in-between value. This is the *opposite* of the expected pattern: intuitively
+   ambiguous mid-safety objects (wooden chair, potted plant) were perfectly stable,
+   while the clearest-cut "safe" case was the only unstable one — plausibly because
+   the prompt's anchor ("safe to drive on/flat solid ground") makes a vertical wall
+   categorically ambiguous (it isn't literally drivable "ground") in a way a chair or
+   plant photo isn't. Worth folding into Discussion/Limitations: low temperature
+   (0.2, matching production) also mechanically suppresses variance, so this doesn't
+   rule out instability at higher temperature — untested here since the goal was
+   testing the existing config, not sweeping it.
+   Separately: `vlm_safety_score.py`'s pinned `model='gemini-1.5-flash'` is fully
+   deprecated and 404s on every call as of this session — a real, previously-unknown
+   Stage 2 bug, independent of the finding above (see Gap Tracking).
+   Full per-object raw data: `assets/vlm_consistency/results.json`.
 2. **`COV_INFLATE` disambiguation.** Re-run the synthetic 3-mode comparison with (a) a
    wider corridor (background splats moved further from the hazard) and (b) a sweep
    over `k_alpha_base`, to determine whether the previously observed near-halt
@@ -257,6 +276,16 @@ the first conversation with Dr. Yel in September.
 - Measuring the real `room0` scene's bounding box (spatial-filter defaults are
   currently placeholders) and confirming the actual TurtleBot4 footprint radius
   (currently a placeholder, 0.16).
+- Real Replica-derived hero-frame version of the VLM consistency check — this
+  summer's run (2026-07-09) used stock-photo proxies since no local Replica data
+  existed in this checkout, not real background-suppressed hero-frame crops.
+- `vlm_safety_score.py`'s hardcoded `model='gemini-1.5-flash'` is fully deprecated
+  and 404s on every call as of 2026-07-09 (discovered while running the consistency
+  check above) — needs to be repointed at a currently-served model before any real
+  Stage 2 run. Note also that whichever model replaces it may need
+  `thinking_config=types.ThinkingConfig(thinking_budget=0)` and an explicit
+  `max_output_tokens` set — `gemini-flash-latest` silently truncated JSON output
+  without these, which `vlm_consistency_check.py` had to work around.
 
 ---
 

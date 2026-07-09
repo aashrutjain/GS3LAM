@@ -207,3 +207,35 @@ silently applied): changing `broadcast_scores_and_save`'s `np.zeros(num_points, 
 default to `np.full(..., np.nan)` plus persisting `class_ids` alongside `safety` in the
 output PLY. That's a splat-schema change per `CLAUDE.md`'s rule and needs a deliberate
 decision from Aashrut, not a silent fix alongside a bug fix.
+
+## Third Stage 2 bug found (2026-07-09) — not yet fixed
+
+Found while running the VLM safety-score consistency check (`GS3LAM_PAPER_SCOPE.md`,
+"This Summer's Remaining Experimental Work" item 1) via a standalone script
+(`vlm_consistency_check.py`), not while working on Stage 3 — logged as its own section
+rather than folded into "Two Stage 2 bugs" above since it's a separate discovery session
+and, unlike those two, has **not** been fixed in `vlm_safety_score.py` itself.
+
+`vlm_safety_score.py:29,170` hardcodes `model='gemini-1.5-flash'` for
+`query_vlm_safety()`. As of this session that model is fully deprecated — every call
+404s with `models/gemini-1.5-flash is not found for API version v1beta, or is not
+supported for generateContent`, confirmed against a live API key via
+`client.models.list()`. The production Stage 2 script cannot currently run at all,
+independent of any prompt- or score-quality question.
+
+Not fixed here — `vlm_safety_score.py` was explicitly out of scope for this session.
+For the standalone consistency-check script, `gemini-2.5-flash` was tried next and
+found to be mid-deprecation itself (intermittent 404 "no longer available" partway
+through a run); settled on the rolling alias `gemini-flash-latest`, which works but
+needed two more adjustments beyond a bare model-name swap:
+- `max_output_tokens` must be set explicitly (e.g. 1024) — left unset, the model's JSON
+  answer was silently truncated mid-value (`{"safety_score": 0.1` with no closing
+  brace) on a large fraction of calls, despite `finish_reason=STOP`.
+- `thinking_config=types.ThinkingConfig(thinking_budget=0)` should be set — the model
+  spends output-token budget on an internal "thinking" pass before the visible JSON
+  answer; `gemini-1.5-flash` predates this behavior and never needed it.
+
+Whoever repoints `vlm_safety_score.py` at a working model should carry both
+adjustments, not just the model-name swap — see `vlm_consistency_check.py` for the
+working config. Which model to standardize on (a rolling alias vs. a pinned dated
+version, for reproducibility) is a decision for that session, not made here.

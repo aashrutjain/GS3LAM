@@ -1,0 +1,112 @@
+{
+  "01_wall_safe": {
+    "scores": [
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      1.0
+    ],
+    "mean": 0.4,
+    "stdev": 0.5477225575051661
+  },
+  "02_bookshelf_heavy_safe": {
+    "scores": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "mean": 0.0,
+    "stdev": 0.0
+  },
+  "03_pillow_soft_safe": {
+    "scores": [
+      0.15,
+      0.15,
+      0.15,
+      0.15,
+      0.15
+    ],
+    "mean": 0.15,
+    "stdev": 0.0
+  },
+  "04_yogamat_soft_safe": {
+    "scores": [
+      0.15,
+      0.15,
+      0.15,
+      0.15,
+      0.15
+    ],
+    "mean": 0.15,
+    "stdev": 0.0
+  },
+  "05_chair_wooden_mid": {
+    "scores": [
+      0.1,
+      0.1,
+      0.1,
+      0.1,
+      0.1
+    ],
+    "mean": 0.1,
+    "stdev": 0.0
+  },
+  "06_pottedplant_mid": {
+    "scores": [
+      0.15,
+      0.15,
+      0.15,
+      0.15,
+      0.15
+    ],
+    "mean": 0.15,
+    "stdev": 0.0
+  },
+  "07_vase_fragile_hazard": {
+    "scores": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "mean": 0.0,
+    "stdev": 0.0
+  },
+  "08_glass_hazard": {
+    "scores": [
+      0.05,
+      0.05,
+      0.05,
+      0.05,
+      0.05
+    ],
+    "mean": 0.05,
+    "stdev": 0.0
+  },
+  "09_cable_hazard": {
+    "scores": [
+      0.1,
+      0.1,
+      0.1,
+      0.1,
+      0.1
+    ],
+    "mean": 0.1,
+    "stdev": 0.0
+  },
+  "10_knife_lethal_hazard": {
+    "scores": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "mean": 0.0,
+    "stdev": 0.0
+  }
+}
