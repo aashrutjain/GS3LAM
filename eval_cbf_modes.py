@@ -141,7 +141,20 @@ def run_mode(
     goal: np.ndarray,
     oracle_time: float,
     near_miss_thresh: float,
+    geom_filt: CBFSafetyFilter,
 ) -> dict:
+    # geom_filt is a single SemanticMode.NONE filter, built once by the caller and shared
+    # across all three mode calls. It supplies the ellipsoid (.A/.s_min/.xyz/.c_base) for
+    # collision_severity/near_miss_events below. `filt` (this mode's own filter, built with
+    # this mode's semantic weighting) still drives the rollout -- routing decisions during
+    # the sim should reflect what each mode actually sees. But for COV_INFLATE, filt.A is
+    # A/scale (semantic_weighting.inflate_covariance), i.e. the ellipsoid the controller was
+    # dodging, NOT the true splat boundary -- grading COV_INFLATE's trajectory against its own
+    # inflated ellipsoid would make its severity/near-miss numbers artificially good relative
+    # to NONE/ALPHA_SCALE (which are graded against the true boundary), regardless of whether
+    # it actually kept the robot further from the real object. Evaluation must use the same
+    # true geometry for all three modes; only the controller differs by mode. (Found and
+    # fixed 2026-07-11 -- see PROGRESS.md.)
     qp_cfg = build_qp_cfg(cfg_dict, semantic_mode, zero_policy, cov_gamma)
     filt = CBFSafetyFilter(splats, qp_cfg)
 
@@ -160,8 +173,8 @@ def run_mode(
         goal_tol=sim_cfg["goal_tol"],
     )
 
-    c_m = effective_c(filt.c_base, qp_cfg.robot_radius, filt.s_min)
-    min_dist_over_time = mahalanobis_signed_distance(result.trajectory_p, filt.xyz, filt.A, c_m)
+    c_m = effective_c(geom_filt.c_base, qp_cfg.robot_radius, geom_filt.s_min)
+    min_dist_over_time = mahalanobis_signed_distance(result.trajectory_p, geom_filt.xyz, geom_filt.A, c_m)
     severity = collision_severity(min_dist_over_time)
     near_misses = near_miss_events(min_dist_over_time, near_miss_thresh)
 
@@ -281,7 +294,7 @@ def main():
         rows.append(
             run_mode(
                 label, splats, cfg_dict, mode, zero_policy, args.cov_gamma,
-                start, goal, oracle_time, args.near_miss_thresh,
+                start, goal, oracle_time, args.near_miss_thresh, baseline_filt,
             )
         )
 

@@ -227,7 +227,9 @@ these unless asked directly — logged here so future sessions don't wander into
   Analytic Collision Cone Barrier Functions on 3D Gaussian Splatting." arXiv:2509.14421, 2025.
 - Chen, T. et al. "SAFER-Splat: A Control Barrier Function for Safe Navigation with
   Online Gaussian Splatting Maps." arXiv:2409.09868, 2024.
-- Li, M., Liu, S., Zhou, H. "GS3LAM: Gaussian Semantic Splatting SLAM." ACM MM, 2024.
+- Li, L., Zhang, L., Wang, Z., Shen, Y. "GS3LAM: Gaussian Semantic Splatting SLAM."
+  Proc. 32nd ACM Int. Conf. Multimedia (MM '24), Melbourne, VIC, Australia, 2024,
+  pp. 3019-3027.
 - Straub, J. et al. "The Replica Dataset: A Digital Replica of Indoor Spaces."
   arXiv:1906.05797, 2019.
 - Sermanet, P. et al. "Generating Robot Constitutions & Benchmarks for Semantic

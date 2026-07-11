@@ -116,11 +116,13 @@ a **synthetic smoke test**, not a real-scene run:
 
 ## Not done — pick up here
 
-1. **Disambiguate the `COV_INFLATE` slow-convergence finding above.** Re-run
-   `eval_cbf_modes.py --phase-a` with (a) background splats moved further from the
-   hazard (wider corridor) and (b) a `k_alpha_base` sweep, to determine whether the
-   observed near-halt is a legitimate "no safe corridor" outcome or an artifact of a
-   too-small fixed gain interacting with multiple simultaneous active constraints.
+1. ~~Disambiguate the `COV_INFLATE` slow-convergence finding above.~~ **Done
+   (2026-07-11) — see "COV_INFLATE disambiguation experiment" section below.** Short
+   answer: fixed-gain artifact (`k_alpha_base`), not a legitimate no-safe-corridor
+   refusal, and not QP infeasibility at the default gain. This was run on a newly
+   reconstructed synthetic scene (the original one referenced above was never persisted
+   to disk — see that section for why), so treat the qualitative mechanism as the
+   trustworthy result, not a literal continuation of the numbers quoted above.
 2. **No real `safety_gsplat.ply` has been used.** Everything above ran against a
    hand-built synthetic PLY, not real Stage 1/2 output — there's no confirmed-real PLY
    path to point at in this checkout. Once one exists: run `costmap_cbf.py` against it
@@ -207,6 +209,183 @@ silently applied): changing `broadcast_scores_and_save`'s `np.zeros(num_points, 
 default to `np.full(..., np.nan)` plus persisting `class_ids` alongside `safety` in the
 output PLY. That's a splat-schema change per `CLAUDE.md`'s rule and needs a deliberate
 decision from Aashrut, not a silent fix alongside a bug fix.
+
+## Eval harness bug found and fixed (2026-07-11): COV_INFLATE was graded against its own inflated ellipsoid
+
+Found during a diagnostic session on `eval_cbf_modes.py` before starting the
+`COV_INFLATE` corridor-widening / `k_alpha_base` sweep work from "Not done" item 1
+below — this session touched only the eval harness, not `src/cbf/`'s math.
+
+**What was found:** `run_mode()` built each `SemanticMode`'s metrics
+(`collision_severity`, `near_miss_events`) from that mode's own freshly-constructed
+`CBFSafetyFilter.A`/`.s_min`. Traced through `qp_filter.build_semantic_inputs()` and
+`semantic_weighting.inflate_covariance()`:
+- `NONE` and `ALPHA_SCALE`: `filt.A` is the true geometric `Sigma^-1` — `ALPHA_SCALE`
+  only modifies `k_alpha`, never touches `A`.
+- `COV_INFLATE`: `filt.A = A / scale` (`scale = 1 + gamma*(1-safety) >= 1`), i.e. the
+  **semantically-inflated** ellipsoid the controller was routing around, not the true
+  splat boundary.
+
+So `COV_INFLATE`'s severity/near-miss numbers were being measured against its own
+artificially widened target, while `NONE`/`ALPHA_SCALE` were measured against the real
+one. Any "`COV_INFLATE` has lower severity" result was therefore uninterpretable — it
+could mean the mode kept the robot further from the real object, or just that it was
+grading itself against an easier target. Also confirms an inconsistency already present
+in the file: start/goal validity was already (correctly) checked against a baseline
+`NONE` filter (`verify_collision_free`), but per-mode trajectory metrics weren't held to
+the same standard.
+
+**What was fixed:** `run_mode()` now takes a `geom_filt: CBFSafetyFilter` parameter — a
+single `NONE`-mode filter built once in `main()` (reusing the existing `baseline_filt`
+that was already built for the start/goal check) — and uses `geom_filt.c_base/.s_min/
+.xyz/.A` for `collision_severity`/`near_miss_events` for all three modes. Each mode's
+own filter (`filt`, built from that mode's `qp_cfg`) still drives its own `rollout()`
+call, so routing/braking decisions during the sim are unchanged and still reflect what
+each mode actually sees — only the evaluation metric now uses one shared true geometry.
+A comment in `run_mode()` documents this split so it doesn't need re-deriving.
+
+**Caveat for the "Not done" item 1 disambiguation work below:** the existing
+"Verification done" section's `--phase-a` `COV_INFLATE` numbers (the `gamma∈{0.3, 1.0}`
+"didn't reach goal within `max_steps`" / "velocity monotonically decaying" finding) were
+produced under this buggy self-grading. That finding was about the *controller's*
+behavior (did the QP reach the goal, what did velocity do), not the post-hoc severity
+metric, so it isn't necessarily invalidated outright — but it has not been re-run since
+the fix, and any severity/near-miss numbers alongside it should be re-derived, not
+reused, before being cited in the disambiguation experiment.
+
+## COV_INFLATE disambiguation experiment (2026-07-11)
+
+Follow-up to the eval-harness fix above, addressing "Not done" item 1: is the
+`COV_INFLATE` near-halt finding a legitimate no-safe-corridor refusal, a `k_alpha_base`
+fixed-gain artifact, or the QP hitting its infeasibility fallback? Only `eval_cbf_modes.py`
+and a new scene-generation script were touched — `src/cbf/`'s math is unchanged.
+
+**Scene reconstruction, not reuse.** The original synthetic scene referenced in
+"Verification done" above was built ad hoc in a prior sandbox session and never written
+to disk — confirmed absent by searching this machine. It could not literally be re-run.
+Rebuilt one matching its documented properties (300 background splats + 1 hazard splat,
+isotropic scale, identity quaternion) via a new, seeded, parameterized generator:
+`scripts/gen_cbf_synthetic_scene.py` (`--collar-radius`, `--seed`, `--out`). Straight-line
+path from `(-2.5,0,0)` to `(2.5,0,0)`; one hazard splat plus a multi-ring "collar" of
+clutter splats encircling the corridor around it, so the robot must detour in both y and
+z, not just dodge sideways in one axis; ~150 far-field bulk splats outside the spatial
+filter's radius cap for scene bulk only, not part of the geometry under test.
+
+Two real bugs in the *scene design itself* (not in `src/cbf/` or `eval_cbf_modes.py`)
+were found and fixed before any of the numbers below were trustworthy — flagging both
+since they'd silently invalidate a re-run that skipped them:
+- **Exact-symmetry degeneracy.** With the hazard placed exactly on the robot's dead-on
+  approach axis, line-of-sight `r` and velocity `v` stayed perfectly colinear, so
+  `collision_cone.py`'s `w = gamma*Av - delta*Ar` had zero lateral component throughout —
+  the one-step QP had no gradient information to ever discover a lateral detour and could
+  only brake, regardless of how much clearance existed off-axis. Fixed by offsetting the
+  hazard+collar cluster 0.03m off the path centerline (`cluster_offset_y` in the
+  generator) — this is a property of *any* perfectly-centered synthetic test with this
+  formulation, not specific to this scene, worth remembering for future synthetic scenes.
+- **Exploitable collar flank.** A first collar design (2 rings, narrow x-extent) left a
+  shallow diagonal bypass just past the ring's finite axial extent, where the hazard's own
+  blocking radius had already tapered enough to slip through — `COV_INFLATE` threaded it
+  even when the on-axis corridor was nominally fully closed by hand calculation. Fixed by
+  widening the collar to 5 rings spanning the hazard's full blocking extent (see script
+  docstring for the exact geometry argument).
+
+Both scene files (`collar_radius=0.90` "narrow", `collar_radius=1.30` "wide") were
+generated with `--seed 42` and are reproducible from the script; the `.ply` files
+themselves are not committed (ephemeral scratch artifacts), only the generator is.
+
+**Step 0 — clean baseline, narrow corridor** (baseline gap ≈10.8cm before any
+inflation). All three modes reach the goal at both gammas. `collision_severity` /
+`near_miss_events` are the (now-correctly-shared, per the eval-harness fix) true
+geometric signed distance in Mahalanobis units, not meters — negative means the
+trajectory entered a splat's true confidence ellipsoid.
+
+| mode | gamma | reached_goal | severity | near_miss | time_ratio | infeasible_count |
+|---|---|---|---|---|---|---|
+| NONE | — | True | -0.064 | 1 | 1.06 | 0 |
+| ALPHA_SCALE | — | True | -0.425 | 1 | 1.06 | 0 |
+| COV_INFLATE | 0.3 | True | 0.046 | 1 | 1.41 | 0 |
+| COV_INFLATE | 1.0 | True | 0.165 | 1 | **11.91** | 0 |
+
+NONE/ALPHA_SCALE are gamma-invariant (expected — gamma only affects `COV_INFLATE`).
+`COV_INFLATE` at `gamma=1.0` does *not* fail to reach the goal (unlike the original,
+unpersisted scene's finding) — it reaches it nearly 12x slower than the oracle while
+achieving the best (most positive) safety margin of the four rows, with a
+near-identical path length to NONE (barely any lateral detour). Velocity trace:
+73% of the 1596-step trajectory spent below 1cm/s.
+
+**Step 1 — infeasibility check.** `infeasible_count=0` for every row above, including
+the pathological `gamma=1.0` run. Traced the full rollout directly (bypassing the CLI):
+`min_h` was negative on 96% of steps, yet the SLSQP solver reported `success=True` every
+single step — the QP always found a feasible point, it just kept choosing near-zero net
+acceleration. **This rules out the QP-infeasibility/fallback-to-max-braking hypothesis at
+the default `k_alpha_base=1.0`** — the solver never once took the `_max_braking()` branch
+in `qp_filter.py`. (It does start firing at higher gains — see Step 3.)
+
+**Step 2 — wider corridor** (baseline gap ≈50.8cm, everything else identical, including
+`k_alpha_base=1.0`):
+
+| mode | gamma | reached_goal | severity | near_miss | time_ratio | infeasible_count |
+|---|---|---|---|---|---|---|
+| COV_INFLATE | 0.3 | True | 0.359 | 0 | 1.07 | 0 |
+| COV_INFLATE | 1.0 | True | 1.190 | 0 | **1.09** | 0 |
+
+Same gamma=1.0 inflation, same `k_alpha_base`, only the surrounding geometry changed —
+and the 12x slowdown collapses to 1.09x (essentially indistinguishable from NONE/
+ALPHA_SCALE's 1.06x) while achieving an even better safety margin. This is the cleanest
+single piece of evidence: whatever caused the Step 0 slowdown depends heavily on how
+tight the actual remaining clearance is, not on `COV_INFLATE`/gamma=1.0 in isolation.
+
+**Step 3 — `k_alpha_base` sweep** (narrow corridor, `gamma=1.0` fixed, values spanning 2
+orders of magnitude):
+
+| k_alpha_base | reached_goal | severity | time_ratio | infeasible_count | frac(min_h<0) |
+|---|---|---|---|---|---|
+| 0.1 | True | -0.050 | 1.18 | 0 | 0.62 |
+| 0.3 | True | 0.066 | 1.25 | 0 | — |
+| 1.0 | True | 0.165 | 11.91 | 0 | 0.96 |
+| 3.0 | **False** | 1.825 | (timeout) | 2 | — |
+| 10.0 | **False** | 1.826 | (timeout) | 40 | 0.98 |
+
+Non-monotonic and mechanistically clean: **lower** `k_alpha_base` (0.1, 0.3) makes the
+barrier *stricter while still safe* (per the class-K constraint `w^Tu >= -(k_alpha/2)*h`,
+a smaller gain means less permissive pre-violation braking), so the robot never lets `h`
+drift deeply negative and threads the corridor briskly (~1.2x oracle time). The *default*
+`k_alpha_base=1.0` is permissive enough pre-violation to let `h` go substantially
+negative, and then the same fixed gain governs a comparatively slow proportional
+recovery back toward `h=0` — this is the Step 0 crawl. Push the gain higher still (3.0,
+10.0) and the now-more-aggressive pre-violation approach drives `h` even further
+negative before the barrier engages; the demanded recovery acceleration this time
+exceeds `a_max`, and the solver genuinely goes infeasible repeatedly (`infeasible_count`
+40 at `k=10.0`), falling back to max-braking and never reaching the goal within the step
+budget — i.e. hypothesis 3 (QP infeasibility) *does* occur, but only as a downstream
+consequence of pushing the same fixed-gain mechanism further, not as an independent
+explanation of the original default-gain finding.
+
+**Conclusion.** Of the three hypotheses, the evidence points squarely at **hypothesis
+2, the fixed-gain artifact**, as the explanation for the original slow-convergence
+finding at the default `k_alpha_base=1.0`:
+- Not hypothesis 1 (legitimate no-safe-corridor refusal) — the same corridor is
+  trivially passable at `k_alpha_base` 0.1/0.3 (~1.2-1.25x oracle time) and at the wider
+  corridor for any tested gamma (~1.1x). There is a safe corridor; the default gain just
+  navigates it very conservatively once it has (permissively) let itself violate the
+  nominal boundary.
+- Not hypothesis 3 (QP infeasibility) at the gain actually used to produce the original
+  finding — confirmed by direct trace, `infeasible_count=0` throughout. Infeasibility
+  is real but only appears at gains well above default, as a *further* consequence of
+  the same permissive/recover-later dynamic, not a separate mechanism.
+- Hypothesis 2 is further supported by Step 2: identical `k_alpha_base` and gamma, only
+  the geometry loosened, and the pathology vanished.
+
+**Caveats, stated plainly.** This is four synthetic runs (plus a 5-point gain sweep) on
+one hand-built, geometrically simple corridor with a spherical robot and a toy PD
+tracker — not a claim about real `room0` geometry, real safety scores, or a tuned
+`k_alpha_base`. The mechanism (permissive-then-slow-recovery under a fixed class-K gain)
+is a property of the collision-cone CBF formulation itself and should generalize
+qualitatively, but the *specific* threshold gains here (1.0 fine-but-slow, 3.0+
+infeasible) are specific to this scene's geometry and are not to be read as tuning
+recommendations for the real robot. `k_alpha_base` tuning against real geometry, and
+whether a scheduled/adaptive gain (rather than one fixed constant) is warranted, remains
+open — not decided by this experiment.
 
 ## Third Stage 2 bug found (2026-07-09) — not yet fixed
 

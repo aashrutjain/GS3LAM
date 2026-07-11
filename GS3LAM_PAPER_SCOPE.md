@@ -297,7 +297,8 @@ citations from without re-verifying from scratch:
 - Tscholl, Nakka & Gunter, "Analytic Collision Cone Barrier Functions on 3DGS,"
   arXiv:2509.14421 (2025) — the Stage 3 geometric primitive.
 - Chen et al., "SAFER-Splat," arXiv:2409.09868 (2024).
-- Li, Liu & Zhou, "GS³LAM," ACM MM (2024).
+- Li, Zhang, Wang & Shen, "GS3LAM: Gaussian Semantic Splatting SLAM," Proc. 32nd ACM
+  Int. Conf. Multimedia (MM '24), Melbourne, VIC, Australia, 2024, pp. 3019-3027.
 - Sermanet et al., "Generating Robot Constitutions & Benchmarks for Semantic Safety"
   (ASIMOV benchmark), CoRL (2025) — candidate for validating VLM safety-score accuracy
   against ground truth.

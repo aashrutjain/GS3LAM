@@ -26,6 +26,8 @@ should not need structural changes — though see §2.3/`PROGRESS.md` for two re
 - Conda env pinned to `cudatoolkit-dev=11.7.0` for PyTorch/GS3LAM compatibility.
   Don't upgrade without checking this first — it was pinned deliberately to resolve
   a C++ compiler conflict between legacy PyTorch and the host toolchain.
+- Beyond `requirements.txt`, the README also requires a separate install step:
+  `pip install submodules/gaussian-semantic-rasterization`. Easy to miss during setup.
 - Local dev GPU is an A2000, VRAM-constrained. GS3LAM training runs at ~80% GPU
   capacity for hours — don't kick off a full retrain casually, and don't remove the
   rasterizer downsampling patches "for cleanliness."
