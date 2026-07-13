@@ -480,34 +480,61 @@ and whether a scheduled/adaptive gain beats one fixed constant — are untouched
 reproduction and remain open. Real-scene numbers are still blocked (no real
 `safety_gsplat.ply` exists on this machine).
 
-## Third Stage 2 bug found (2026-07-09) — not yet fixed
+## Third Stage 2 bug found (2026-07-09) — now fixed (2026-07-12)
 
 Found while running the VLM safety-score consistency check (`GS3LAM_PAPER_SCOPE.md`,
 "This Summer's Remaining Experimental Work" item 1) via a standalone script
 (`vlm_consistency_check.py`), not while working on Stage 3 — logged as its own section
-rather than folded into "Two Stage 2 bugs" above since it's a separate discovery session
-and, unlike those two, has **not** been fixed in `vlm_safety_score.py` itself.
+rather than folded into "Two Stage 2 bugs" above since it was a separate discovery
+session. Fixed in `vlm_safety_score.py` in a dedicated Stage-2-only session (2026-07-12).
 
-`vlm_safety_score.py:29,170` hardcodes `model='gemini-1.5-flash'` for
-`query_vlm_safety()`. As of this session that model is fully deprecated — every call
-404s with `models/gemini-1.5-flash is not found for API version v1beta, or is not
-supported for generateContent`, confirmed against a live API key via
-`client.models.list()`. The production Stage 2 script cannot currently run at all,
-independent of any prompt- or score-quality question.
+**The bug.** `vlm_safety_score.py:29,170` hardcoded `model='gemini-1.5-flash'` for
+`query_vlm_safety()`. That model is fully deprecated — every call 404s with
+`models/gemini-1.5-flash is not found for API version v1beta, or is not supported for
+generateContent`, confirmed against a live API key via `client.models.list()`. The
+production Stage 2 script could not run at all, independent of any prompt- or
+score-quality question.
 
-Not fixed here — `vlm_safety_score.py` was explicitly out of scope for this session.
-For the standalone consistency-check script, `gemini-2.5-flash` was tried next and
-found to be mid-deprecation itself (intermittent 404 "no longer available" partway
-through a run); settled on the rolling alias `gemini-flash-latest`, which works but
-needed two more adjustments beyond a bare model-name swap:
-- `max_output_tokens` must be set explicitly (e.g. 1024) — left unset, the model's JSON
-  answer was silently truncated mid-value (`{"safety_score": 0.1` with no closing
-  brace) on a large fraction of calls, despite `finish_reason=STOP`.
-- `thinking_config=types.ThinkingConfig(thinking_budget=0)` should be set — the model
-  spends output-token budget on an internal "thinking" pass before the visible JSON
-  answer; `gemini-1.5-flash` predates this behavior and never needed it.
+**Model decision (made this session): pinned to `gemini-3.5-flash`.** The
+consistency-check script had settled on the rolling `gemini-flash-latest` alias (after
+`gemini-2.5-flash` was found mid-deprecation), but that alias is deliberately *not*
+carried into the production script: Google documents `*-latest` aliases as
+experimental / not-for-production, and a rolling alias means a later re-run could
+silently use a different model than the one reported in the write-up. `gemini-3.5-flash`
+is the current stable GA release; pinning a dated/stable name is what makes the paper's
+reported model reproducible. This is a research decision (model behind the safety
+scores), recorded here rather than made silently.
 
-Whoever repoints `vlm_safety_score.py` at a working model should carry both
-adjustments, not just the model-name swap — see `vlm_consistency_check.py` for the
-working config. Which model to standardize on (a rolling alias vs. a pinned dated
-version, for reproducibility) is a decision for that session, not made here.
+**What was fixed in `vlm_safety_score.py`:**
+- Model name pulled into a single `GEMINI_MODEL = "gemini-3.5-flash"` constant, referenced
+  at the one real call site — so a future model swap is a one-line change, not a
+  grep-and-replace across two hardcoded spots.
+- Both config adjustments already proven necessary in `vlm_consistency_check.py` were
+  carried over (not assumed unnecessary just because the model name changed):
+  - `max_output_tokens=1024` — left unset, current "thinking" models silently truncate
+    the JSON answer mid-value (`{"safety_score": 0.1` with no closing brace) despite
+    `finish_reason=STOP`.
+  - `thinking_config=types.ThinkingConfig(thinking_budget=0)` — disables the internal
+    "thinking" pass that `gemini-1.5-flash` predated and never needed.
+- Removed dead line 29 (`model = genai.GenerativeModel('gemini-1.5-flash')`): a leftover
+  from the old `google.generativeai` SDK. `genai.GenerativeModel` does not exist in the
+  new `google.genai` client the file already uses (`client = genai.Client(...)`), so the
+  line raised `AttributeError` at import — the module was un-importable — and the `model`
+  global it defined was never referenced anywhere.
+- Closed the empty-key gap: `GEMINI_API_KEY = ""` (never loaded from anywhere) was
+  replaced with `load_dotenv()` + `os.environ["GEMINI_API_KEY"]`, mirroring
+  `vlm_consistency_check.py`, so the module-level `client` authenticates from `.env`.
+  Found adjacent to the model bug; the script could not authenticate regardless of model.
+
+**Verified against the real API — not just by inspection.** Ran 3 live calls through the
+actual `vlm_safety_score.query_vlm_safety()` (imported from the real module, not a
+reimplementation; the classifier-path-only `torch`/`src.Decoder` imports were stubbed
+since they aren't installed here and the function never uses them). All 3 crops
+(`assets/vlm_consistency/images/`) returned: **no 404, a valid parsed JSON
+`safety_score` float, no truncation** — wall `1.000`, wooden chair `0.150`, fragile vase
+`0.000` (semantically plausible, though that ordering was not the thing under test). This
+is a smoke test — a handful of calls confirming the model/config path works end-to-end —
+**not** a full-pipeline run: there is still no real `safety_gsplat.ply` on this machine,
+so Stage 2 has not been run against real Stage 1 output, and score *quality/consistency*
+on real hero-frame crops remains the open consistency-check question in
+`GS3LAM_PAPER_SCOPE.md`, unaffected by this fix.

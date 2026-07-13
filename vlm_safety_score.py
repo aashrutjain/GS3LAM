@@ -21,12 +21,17 @@ from src.Decoder import SemanticDecoder as TrainedSemanticDecoder
 # Modern SDK
 from google import genai
 from google.genai import types
+from dotenv import load_dotenv
 
 # Congigs
-GEMINI_API_KEY = ""
-
+load_dotenv()
+GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 client = genai.Client(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+
+# Pinned GA model (not the experimental 'gemini-flash-latest' rolling alias) so the
+# model reported in the write-up is reproducible on re-runs. One constant, referenced
+# at the single call site below.
+GEMINI_MODEL = "gemini-3.5-flash"
 
 PLY_PATH = "logs/Replica/room0_seed1/260422-13:33:16/gsplat.ply"
 PARAMS_PATH = "logs/Replica/room0_seed1/260422-13:33:16/params.npz"
@@ -151,9 +156,9 @@ def extract_canonical_view(target_class_id, points_3d, class_ids):
     return base64.b64encode(buffer).decode('utf-8')
 
 
-# Gemini 1.5 Flash Safety Call
+# Gemini Flash Safety Call
 def query_vlm_safety(base64_image):
-    print("Querying Gemini 1.5 Flash for Safety Score...")
+    print(f"Querying {GEMINI_MODEL} for Safety Score...")
    
     # Convert the base64 string back into a PIL Image for Gemini
     img_bytes = base64.b64decode(base64_image)
@@ -167,11 +172,13 @@ def query_vlm_safety(base64_image):
     """
    
     response = client.models.generate_content(
-        model='gemini-1.5-flash',
+        model=GEMINI_MODEL,
         contents=[prompt, img],
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
-            temperature=0.2
+            temperature=0.2,
+            max_output_tokens=1024,
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
         )
     )
    
