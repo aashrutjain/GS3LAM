@@ -387,6 +387,99 @@ recommendations for the real robot. `k_alpha_base` tuning against real geometry,
 whether a scheduled/adaptive gain (rather than one fixed constant) is warranted, remains
 open — not decided by this experiment.
 
+## COV_INFLATE disambiguation — independent reproduction (2026-07-12)
+
+Re-ran Steps 0–3 of the disambiguation above, from scratch, under the (already-fixed)
+eval harness, to turn "trust the mechanism, not the literal numbers" into a checked
+result. The experiment above was worth reproducing precisely *because* it carried that
+caveat: its numbers came from a scene that had to be reconstructed (the original was
+never persisted), so an independent re-run tests whether the reconstruction + the fixed
+harness actually reproduce, not just whether the story is self-consistent. "Not done"
+item 1 stays struck-through — this section records that it was independently reproduced,
+it does not reopen it.
+
+**Method — no committed source changed.** Regenerated both seed-42 scenes from the
+committed `scripts/gen_cbf_synthetic_scene.py` (`--collar-radius 0.90` narrow,
+`1.30` wide, `--seed 42`) and drove Steps 0–3 from a scratch script that *imports* the
+committed helpers (`eval_cbf_modes.build_qp_cfg` / `synthesize_hazard_safety` /
+`PassthroughFilter` / `verify_collision_free`, `src.cbf.sim.rollout`) rather than
+reimplementing them. Grading uses the exact same shared-`geom_filt` true-geometry path
+as `run_mode()` (the eval-harness fix), replicated verbatim. Same config defaults as the
+committed run (`k_alpha_base=1.0`, `a_max=1.0`, `robot_radius=0.16`, `dt=0.05`,
+`max_steps=2000`, hazard `radius=0.5`/`safety=0.1`, `near_miss_thresh=0.3`), same
+corridor path `(-2.5,0,0)→(2.5,0,0)`. Env: system Python, `numpy 2.2.6`, `scipy 1.15.2`
+(the committed run's env was not recorded). The scratch scenes/driver are ephemeral
+(not committed), same as the original run's `.ply` files.
+
+**Result: reproduced to the displayed precision on every row.** Fresh numbers, with the
+committed value in brackets where the table above quoted one:
+
+*Step 0/1 — narrow, `k_alpha_base=1.0`* (severity = shared true-geometry signed distance,
+Mahalanobis units):
+
+| mode | gamma | reached | severity | near_miss | time_ratio | infeasible | frac(min_h<0) |
+|---|---|---|---|---|---|---|---|
+| NONE | — | True | -0.064 [-0.064] | 1 | 1.06 [1.06] | 0 [0] | 0.55 |
+| ALPHA_SCALE | — | True | -0.425 [-0.425] | 1 | 1.06 [1.06] | 0 [0] | 0.57 |
+| COV_INFLATE | 0.3 | True | +0.046 [0.046] | 1 | 1.41 [1.41] | 0 [0] | 0.68 |
+| COV_INFLATE | 1.0 | True | +0.165 [0.165] | 1 | **11.91 [11.91]** | 0 [0] | 0.96 |
+
+The `gamma=1.0` crawl reappears identically: 1596-step trajectory (matches committed),
+**73% of steps below 1cm/s** (committed prose said 73%), `min_h<0` on **96%** of steps
+(committed said "96%"). Step 1's discriminator holds exactly: `infeasible_count=0` on
+every Step 0 row including the pathological one — the `_max_braking()` fallback never
+fires at the default gain, so the SLSQP solver reports `success=True` every step while
+still letting `h` sit negative and choosing near-zero net acceleration. Hypothesis 3 is
+ruled out at the default gain, reproduced.
+
+*Step 2 — wide corridor, identical `k_alpha_base=1.0`:*
+
+| mode | gamma | reached | severity | near_miss | time_ratio | infeasible | frac(min_h<0) |
+|---|---|---|---|---|---|---|---|
+| COV_INFLATE | 0.3 | True | +0.359 [0.359] | 0 | 1.07 [1.07] | 0 [0] | 0.28 |
+| COV_INFLATE | 1.0 | True | +1.190 [1.190] | 0 | **1.09 [1.09]** | 0 [0] | 0.40 |
+
+Same gamma, same gain, only the geometry loosened — the 11.91× slowdown collapses to
+1.09×, reproduced exactly. The lower `frac(min_h<0)` (0.40 vs 0.96) is the mechanism made
+visible: in the wide corridor the controller barely lets `h` go negative, so there is
+almost nothing for the fixed-gain recovery to crawl back from.
+
+*Step 3 — narrow, COV_INFLATE, `gamma=1.0` fixed, `k_alpha_base` sweep:*
+
+| k_alpha_base | reached | severity | time_ratio | infeasible | frac(min_h<0) |
+|---|---|---|---|---|---|
+| 0.1 | True | -0.050 [-0.050] | 1.18 [1.18] | 0 [0] | 0.62 [0.62] |
+| 0.3 | True | +0.066 [0.066] | 1.25 [1.25] | 0 [0] | 0.63 |
+| 1.0 | True | +0.165 [0.165] | 11.91 [11.91] | 0 [0] | 0.96 [0.96] |
+| 3.0 | **False** | +1.825 [1.825] | (timeout) | 2 [2] | 0.99 |
+| 10.0 | **False** | +1.826 [1.826] | (timeout) | 40 [40] | 0.98 [0.98] |
+
+Non-monotonic time_ratio and the infeasibility onset at `k≥3.0` both reproduce exactly,
+including `infeasible_count` 2 and 40.
+
+**Cross-check against the stock CLI.** `python eval_cbf_modes.py --ply-path narrow.ply
+--phase-a --cov-gamma 1.0 --start=-2.5,0,0 --goal=2.5,0,0` printed COV_INFLATE
+`severity=0.16461`, `infeasible_count=0`, `time_ratio=11.91` (and NONE `-0.06385`, ALPHA
+`-0.42509`) — identical to the driver's Step 0 `gamma=1.0` row. Confirms the scratch
+driver reproduces the committed harness, not a subtly different computation.
+
+**Verdict: confirms the committed conclusion (hypothesis 2, fixed-gain artifact).** The
+reproduction is not merely qualitatively consistent — on this machine (`numpy 2.2.6` /
+`scipy 1.15.2`) it matched the committed numbers to every displayed digit, on all four
+steps and the CLI cross-check. So the earlier "trust the mechanism, not the numbers"
+hedge can be tightened for *this* scene: both the mechanism and the literal numbers are
+reproducible from the committed seed-42 generator. That the SLSQP path is bit-stable
+across (at least these) scipy versions is a mild bonus finding, not something to lean on.
+
+**Caveats unchanged.** This strengthens confidence in the *reproduction*, not the
+*generality*. It is still one hand-built, geometrically simple corridor with a spherical
+robot and a toy PD tracker; the specific threshold gains (1.0 fine-but-slow, 3.0+
+infeasible) remain properties of this scene, not tuning recommendations. The open
+questions the original section flagged — `k_alpha_base` against real `room0` geometry,
+and whether a scheduled/adaptive gain beats one fixed constant — are untouched by a
+reproduction and remain open. Real-scene numbers are still blocked (no real
+`safety_gsplat.ply` exists on this machine).
+
 ## Third Stage 2 bug found (2026-07-09) — not yet fixed
 
 Found while running the VLM safety-score consistency check (`GS3LAM_PAPER_SCOPE.md`,
