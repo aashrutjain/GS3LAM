@@ -294,6 +294,18 @@ Both scene files (`collar_radius=0.90` "narrow", `collar_radius=1.30` "wide") we
 generated with `--seed 42` and are reproducible from the script; the `.ply` files
 themselves are not committed (ephemeral scratch artifacts), only the generator is.
 
+**Unrelated fix bundled into this same commit, undocumented at the time.** This
+commit (`6301e28`) also corrected the GS3LAM citation's author list in
+`ARCHITECTURE.md` and `GS3LAM_PAPER_SCOPE.md` — both had been transcribed with
+fabricated authors (`ARCHITECTURE.md` read "Li, M., Liu, S., Zhou, H.";
+`GS3LAM_PAPER_SCOPE.md` read "Li, Liu & Zhou") since the sessions that first wrote
+those docs, corrected here to the real author list, "Li, Zhang, Wang, Shen"
+(matching `README.md`'s bibtex, which had been correct all along). Neither the fix
+nor its rationale was mentioned in this commit's message or in this file at the
+time. Discovered via `git log -S` archaeology in a later session (2026-07-17), when
+asked to confirm the fix had actually landed — it had. A real, correct fix; just an
+undocumented one until now.
+
 **Step 0 — clean baseline, narrow corridor** (baseline gap ≈10.8cm before any
 inflation). All three modes reach the goal at both gammas. `collision_severity` /
 `near_miss_events` are the (now-correctly-shared, per the eval-harness fix) true
