@@ -129,11 +129,12 @@ a **synthetic smoke test**, not a real-scene run:
    and watch for the `zero_fraction` warning from `ply_io.py` (expect it to be large,
    given Stage 2 bug (1) below), then run `eval_cbf_modes.py` without `--phase-a` for
    the (currently not-yet-meaningful, per that same bug) Phase B numbers.
-3. **No formal unit test suite** — the checks in "Verification done" were ad hoc
-   scripts run manually, not committed as `pytest`/`unittest` cases. Worth turning
-   `build_baseline_inputs`' safety-blindness check and `ellipsoid.build_sigma`'s
-   isotropic hand-computation into a real `tests/` module, especially since the
-   `_clip_to_a_max` dtype bug above shows the solver path wasn't exercised until now.
+3. ~~**No formal unit test suite**~~ **Done (2026-07-17) — see "Real pytest test
+   suite added" section below.** The checks below were ad hoc scripts run manually,
+   not committed as `pytest`/`unittest` cases. Turned `build_baseline_inputs`'
+   safety-blindness check and `ellipsoid.build_sigma`'s isotropic hand-computation
+   into a real `tests/` module, especially since the `_clip_to_a_max` dtype bug above
+   shows the solver path wasn't exercised until now.
 4. **`scipy` has not been confirmed inside the actual pinned `cudatoolkit-dev=11.7.0`
    conda env** — only confirmed importable/installable in this machine's plain system
    Python, which has no CUDA/conda setup at all. Low risk (pure-Python package) but
@@ -538,3 +539,88 @@ is a smoke test — a handful of calls confirming the model/config path works en
 so Stage 2 has not been run against real Stage 1 output, and score *quality/consistency*
 on real hero-frame crops remains the open consistency-check question in
 `GS3LAM_PAPER_SCOPE.md`, unaffected by this fix.
+
+## Real pytest test suite added (2026-07-17)
+
+Answers "Not done" item 3 above. Only `tests/`, a new root `conftest.py`, and this file
+changed — `src/cbf/` itself is untouched (no behavior changes; solver choice in
+`qp_filter.py` is explicitly next-session scope, not this one).
+
+Added a root `conftest.py` (previously none existed) that inserts the repo root onto
+`sys.path`, since there's no `pyproject.toml`/`setup.cfg` installing this project as a
+package — without it, plain `pytest` (as opposed to `python -m pytest`) only puts
+`tests/` itself on `sys.path`, and `from src.cbf... import ...` / `from eval_cbf_modes
+import ...` would not resolve.
+
+Four new test modules, porting the ad hoc "Verification done" checks above one-to-one,
+plus one new addition:
+
+- `tests/test_cbf_qp_filter.py` — the `_clip_to_a_max` dtype regression (asserts a
+  `float64` input whose norm exceeds `a_max` is clipped without being downcast — the
+  exact bug that crashed SLSQP before, now with a companion float32 case) and the
+  `build_baseline_inputs` safety-blindness contract (byte-identical `(A, s_min,
+  k_alpha)` whether `safety_raw` is real data, `NaN`, or `None`).
+- `tests/test_cbf_ellipsoid.py` — `ellipsoid.build_sigma` on an isotropic splat matches
+  hand-computed `scale² · I` (using an unnormalized identity-equivalent quaternion, to
+  exercise `normalize_quaternion` rather than assume pre-normalized input).
+- `tests/test_cbf_collision_cone.py` — `compute_collision_cones`'s head-on `h` value and
+  the receding-trajectory non-activation check. **Caveat:** the original ad hoc scene's
+  exact numbers were never persisted (same situation `scripts/gen_cbf_synthetic_scene.py`
+  documents for the COV_INFLATE scene) — confirmed absent via repo-wide grep for
+  `119.456`. Reconstructed a scene matching the "robot heading straight at a synthetic
+  obstacle" description (isotropic unit-scale splat, `A = I`, velocity exactly parallel
+  to line-of-sight) where the general `h = beta*gamma - delta²` collapses to `-|v|²·c_m²`
+  independent of distance; solved `c_m` backward so this closed form reproduces the exact
+  pinned value `h = -119.456`. This pins the *value* PROGRESS.md recorded, not the
+  original scene's literal (lost) numbers — flagging the distinction rather than
+  overclaiming a byte-for-byte port.
+- `tests/test_cbf_cov_inflate_regression.py` — **new, did not exist before.** Pins the
+  digit-exact COV_INFLATE disambiguation numbers (Step 0/2/3 tables, seed=42 narrow/wide
+  corridor scenes) as regression assertions: Step 0 narrow corridor `gamma=1.0`
+  (`severity≈0.165`, `time_ratio≈11.91`, `infeasible_count=0`), Step 2 wide corridor
+  `time_ratio` collapsing to `≈1.09`, and Step 3's `infeasible_count` at
+  `k_alpha_base=3.0` (`2`) and `10.0` (`40`). Reconstructs both scenes from the committed
+  `scripts/gen_cbf_synthetic_scene.py --seed 42` generator and drives them through
+  `eval_cbf_modes.py`'s own helpers (`build_qp_cfg`, `synthesize_hazard_safety`,
+  `PassthroughFilter`) + `src.cbf.sim.rollout`, mirroring the independent-reproduction
+  method already validated in the section above rather than reimplementing the harness.
+  This is the test that will catch it if the upcoming Clarabel solver swap silently
+  changes behavior — the whole point of writing it now, before that swap, not after.
+
+**Run and confirmed passing, this session, on this machine** (`numpy 2.2.6`, `scipy
+1.15.2`, `pytest 6.2.5` — same versions the independent COV_INFLATE reproduction used,
+which is why the digit-exact assertions above hold here):
+
+```
+$ python3 -m pytest -v --ignore=tests/test_semantic_decoder_load.py
+collected 11 items
+
+tests/test_cbf_collision_cone.py::test_compute_collision_cones_head_on_h_matches_hand_computed_value PASSED
+tests/test_cbf_collision_cone.py::test_compute_collision_cones_receding_trajectory_does_not_activate_cone PASSED
+tests/test_cbf_cov_inflate_regression.py::test_step0_narrow_corridor_gamma1_pathological_slowdown PASSED
+tests/test_cbf_cov_inflate_regression.py::test_step2_wide_corridor_gamma1_time_ratio_collapses PASSED
+tests/test_cbf_cov_inflate_regression.py::test_step3_narrow_corridor_k_alpha_sweep_infeasible_count[3.0-2] PASSED
+tests/test_cbf_cov_inflate_regression.py::test_step3_narrow_corridor_k_alpha_sweep_infeasible_count[10.0-40] PASSED
+tests/test_cbf_ellipsoid.py::test_build_sigma_isotropic_matches_hand_computed_scale_squared_identity PASSED
+tests/test_cbf_qp_filter.py::test_clip_to_a_max_preserves_float64_dtype_when_clipped PASSED
+tests/test_cbf_qp_filter.py::test_clip_to_a_max_preserves_float32_dtype_when_clipped PASSED
+tests/test_cbf_qp_filter.py::test_build_baseline_inputs_is_identical_whether_safety_raw_is_real_or_nan PASSED
+tests/test_cbf_qp_filter.py::test_build_baseline_inputs_is_identical_whether_safety_raw_is_none_or_nan PASSED
+
+11 passed in 78.56s
+```
+
+**Why `--ignore=tests/test_semantic_decoder_load.py` is needed:** that pre-existing test
+(see "Two Stage 2 bugs found" above) fails at *collection* (`ModuleNotFoundError: No
+module named 'torch'`) on this torch-less sandbox, which aborts the entire pytest session
+before any test runs — not something introduced this session, and not fixed here (out of
+scope; it's already documented above as blocked on a CUDA-capable environment). Plain
+`pytest` (no `--ignore`) will hit this same collection error in this environment; use the
+flag, or run this session's four `test_cbf_*` modules directly, until a GPU/torch
+environment is available.
+
+**Not covered, deliberately:** `_solve_scipy_slsqp` itself (the SLSQP call site) has no
+direct unit test — it's exercised indirectly through every `test_cbf_cov_inflate_
+regression.py` rollout (thousands of real solves, all passing), but there's no isolated
+test asserting its output against a hand-solved QP. Worth adding once the Clarabel swap
+happens, so both backends can be checked against the same known-good solution.
