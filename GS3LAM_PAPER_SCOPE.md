@@ -29,9 +29,13 @@ which resumes fall semester 2026. Do not conflate (b) or (c) with a completed re
   independently verified equation-for-equation against Tscholl et al. (arXiv:2509.14421).
   It has been run exactly once, against a hand-built synthetic scene (300 background
   splats + 1 obstacle). It has never touched real data or a real robot.
-- One open research finding from that synthetic run is unresolved: whether the
-  `COV_INFLATE` semantic-weighting mode's slow-convergence behavior is a legitimate
-  "no safe corridor" result or an artifact of a fixed gain parameter.
+- The `COV_INFLATE` slow-convergence question is **resolved (2026-07-11)**: it is an
+  artifact of a fixed gain parameter (`k_alpha_base`), not a legitimate "no safe
+  corridor" result. Still a synthetic finding — it was established on a reconstructed
+  synthetic scene, so it validates the implementation's behavior, not real navigation.
+  A 2026-07-18 solver change corrected its magnitude (the originally recorded ~12x
+  slowdown was roughly half solver suboptimality; the corrected figure is ~5.9x). The
+  qualitative conclusion survived that correction unchanged — see `PROGRESS.md`.
 - No TurtleBot4 deployment, real or simulated-on-real-data, has happened.
 
 **What this means for the paper:** the writing can and should proceed now for every
@@ -184,14 +188,27 @@ one in particular determines how strong the paper's empirical foundation is.
    deprecated and 404s on every call as of this session — a real, previously-unknown
    Stage 2 bug, independent of the finding above (see Gap Tracking).
    Full per-object raw data: `assets/vlm_consistency/results.json`.
-2. **`COV_INFLATE` disambiguation.** Re-run the synthetic 3-mode comparison with (a) a
-   wider corridor (background splats moved further from the hazard) and (b) a sweep
-   over `k_alpha_base`, to determine whether the previously observed near-halt
-   behavior is a legitimate "no safe corridor" result or a fixed-gain artifact. Also
-   worth checking whether the QP is repeatedly hitting infeasibility and falling back
-   to max-braking — Tscholl et al.'s own paper notes their filter can go infeasible
-   near obstacles with insufficient control authority, which may be exactly what's
-   happening here.
+2. **`COV_INFLATE` disambiguation — done (2026-07-11).** Re-ran the synthetic 3-mode
+   comparison with (a) a wider corridor (background splats moved further from the
+   hazard) and (b) a sweep over `k_alpha_base`, plus a direct check of whether the QP
+   was hitting infeasibility and falling back to max-braking (Tscholl et al. note their
+   filter can go infeasible near obstacles with insufficient control authority). The
+   original synthetic scene had never been written to disk, so this ran against a
+   reconstructed, seeded equivalent (`scripts/gen_cbf_synthetic_scene.py`) — treat the
+   mechanism as the trustworthy result, not the literal numbers.
+   **Finding:** a fixed-gain artifact, not a legitimate "no safe corridor" refusal, and
+   not QP infeasibility at the default gain (`infeasible_count=0` there by direct
+   trace). The same corridor is traversed easily at `k_alpha_base` 0.1/0.3 (~1.2x
+   oracle time), and widening the corridor at unchanged gain collapses the slowdown to
+   ~1.09x. Infeasibility is real but appears only at gains well above default, as a
+   further consequence of the same permissive/recover-later dynamic rather than a
+   separate mechanism.
+   **Amended 2026-07-18:** the originally recorded ~12x slowdown at default gain was
+   measured under a `scipy.optimize.SLSQP` QP backend later shown to return suboptimal
+   controls on ~12% of constrained steps. Under the corrected (Clarabel) backend the
+   figure is ~5.9x. The qualitative finding above is unaffected — every supporting
+   measurement was verified bit-identical across both solvers — but **quote ~5.9x, not
+   ~12x**. Full analysis in `PROGRESS.md`.
 
 Both of these produce content that upgrades "Results" from purely-synthetic to
 genuinely informative, without needing anything blocked by lab access.
@@ -246,9 +263,13 @@ hasn't been run yet.
 
 ### 6. Discussion
 What the synthetic results show about the implementation's correctness. Limitations:
-VLM latency, score calibration, the still-open `COV_INFLATE` question, scene-specific
-generalization, and — honestly — that real-world validation is the paper's main
-remaining gap. Flag this directly; it strengthens credibility, it doesn't weaken it.
+VLM latency, score calibration, scene-specific generalization, and — honestly — that
+real-world validation is the paper's main remaining gap. Flag this directly; it
+strengthens credibility, it doesn't weaken it. On `COV_INFLATE`: the fixed-gain question
+is resolved, but the limitation to state is that it was resolved on a *synthetic*
+reconstructed scene only, so `COV_INFLATE`'s behavior on real geometry remains unknown —
+and that its sensitivity to `k_alpha_base` means the gain is a tuning parameter the
+method currently offers no principled way to choose.
 
 ### 7. Conclusion
 Restate the contribution as what's built and verified so far, not as a demonstrated

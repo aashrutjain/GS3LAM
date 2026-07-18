@@ -26,3 +26,4 @@ dependencies:
     - cyclonedds
     - plyfile==0.8.1
     - scipy
+    - clarabel==0.11.1

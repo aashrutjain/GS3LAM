@@ -13,13 +13,17 @@ with the eventual goal of driving a Control Barrier Function on a TurtleBot4.
 
 **Current milestone:** Stage 3 — costmap + CBF integration, now mostly built and
 smoke-tested on a synthetic scene (no real safety_gsplat.ply exists in this checkout
-yet). The `src/cbf/` library, `costmap_cbf.py`, and `eval_cbf_modes.py` (the 3-mode
-comparison harness) all exist and run; a pinned QP-solver choice and a real unit test
-suite do not yet. See `PROGRESS.md` for exact status, including a real dtype bug found
-and fixed in the solver path, and `ARCHITECTURE.md` §2.3 for the design. Stages 1
-(GS3LAM semantic splatting) and 2 (hero-frame VLM safety scoring) are functional and
-should not need structural changes — though see §2.3/`PROGRESS.md` for two real Stage
-2 bugs found while building Stage 3 (not yet fixed).
+yet). The `src/cbf/` library, `costmap_cbf.py`, `eval_cbf_modes.py` (the 3-mode
+comparison harness), a pytest suite under `tests/`, and both QP backends
+(`clarabel` and `scipy_slsqp`, selectable via `CBFQPConfig.solver`) all exist and run.
+`clarabel` is the default as of 2026-07-18; `scipy_slsqp` is a retained, still-tested
+fallback. See `PROGRESS.md`, the source of truth for exact status, and
+`ARCHITECTURE.md` §2.3 for the design. Stages 1 (GS3LAM semantic splatting) and 2
+(hero-frame VLM safety scoring) are functional and should not need structural changes.
+
+Run the tests with `python3 -m pytest --ignore=tests/test_semantic_decoder_load.py`
+(that module needs torch and aborts collection without it); add `--solver=clarabel` to
+put the conic backend through the same assertions.
 
 ## Environment
 
@@ -38,13 +42,15 @@ should not need structural changes — though see §2.3/`PROGRESS.md` for two re
 <!-- TODO(Aashrut): fill in Stage 1/2 entry points -->
 - Train GS3LAM on Replica: `TODO`
 - Run hero-frame selection + VLM safety scoring + splat augmentation (writes
-  `safety_gsplat.ply`): `python vlm_safety_score.py` (has two known bugs — see
-  `PROGRESS.md`)
+  `safety_gsplat.ply`): `python vlm_safety_score.py` (three known bugs found here have
+  all been fixed — see `PROGRESS.md`; it has still never been run against real Stage 1
+  output, so score quality is unverified)
 - Stage 3 online single-step filter demo: `python costmap_cbf.py --config
   configs/cbf/room0_cbf.py --ply-path <path/to/safety_gsplat.ply>`
 - Stage 3 CBF/costmap 3-mode eval: `python eval_cbf_modes.py --config
-  configs/cbf/room0_cbf.py --ply-path <path/to/safety_gsplat.ply> --phase-a` (drop
-  `--phase-a` once Stage 2 bug in `PROGRESS.md` is fixed and scores are meaningful)
+  configs/cbf/room0_cbf.py --ply-path <path/to/safety_gsplat.ply> --phase-a` (keep
+  `--phase-a`: the Stage 2 bugs that made Phase B meaningless are fixed, but no real
+  `safety_gsplat.ply` exists in this checkout yet, so Phase B has nothing real to read)
 
 ## Data contracts
 

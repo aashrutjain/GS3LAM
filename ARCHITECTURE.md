@@ -97,11 +97,22 @@ against a synthetic scene (no real Stage 1/2 output exists in this checkout yet)
 collision-cone math was confirmed to match an independent hand calculation, and a real
 dtype bug in the QP solver path was found and fixed in the process (see `PROGRESS.md`).
 `ALPHA_SCALE` vs `NONE` behaved exactly as predicted (same path, slower approach);
-`COV_INFLATE`'s behavior in that synthetic scene is a real open finding, not yet
-disambiguated from a possible gain-tuning artifact — see `PROGRESS.md`. Not yet built:
-a pinned QP-solver dependency (currently a `scipy.optimize.SLSQP` stopgap behind an
-abstract `CBFQPConfig.solver` string — see `src/cbf/qp_filter.py`'s module docstring),
-a real (non-ad-hoc) unit test suite, and the ROS2/TurtleBot4 node itself (the seam for
+`COV_INFLATE`'s slow-convergence behavior in that synthetic scene was disambiguated on
+2026-07-11 as a fixed-gain (`k_alpha_base`) artifact, not a legitimate no-safe-corridor
+refusal — see `PROGRESS.md`. That conclusion still holds under the Clarabel backend, but
+its headline magnitude is under revision: roughly half the recorded 11.91x slowdown turned
+out to be SLSQP suboptimality rather than the gain mechanism (`PROGRESS.md`, "Clarabel QP
+backend added").
+
+Both QP backends are now built and pinned: `clarabel` (interior-point conic, the paper's
+own choice, handles the `||u|| <= a_max` actuator bound natively as a second-order cone)
+and the original `scipy.optimize.SLSQP`, selectable via the `CBFQPConfig.solver` string —
+see `src/cbf/qp_filter.py`'s module docstring for the reformulation and the shared failure
+contract. **`clarabel` is the default as of 2026-07-18**, accepted on the strength of a
+state-by-state re-solve showing SLSQP returned suboptimal controls on ~12% of constrained
+steps while reporting success; `scipy_slsqp` is retained as a still-tested fallback. A real
+(non-ad-hoc) pytest suite also now exists under `tests/`, including direct hand-solved QP
+tests covering both backends. Not yet built: the ROS2/TurtleBot4 node itself (the seam for
 it exists at `src/cbf/interfaces.py`).
 
 Module layout:

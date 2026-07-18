@@ -256,6 +256,29 @@ reused, before being cited in the disambiguation experiment.
 
 ## COV_INFLATE disambiguation experiment (2026-07-11)
 
+> **CORRECTION (2026-07-18) — read before the numbers below.** The headline `11.91x`
+> narrow-corridor slowdown recorded in this section is **inflated by a solver artifact
+> worth roughly half the figure**. It was measured under the then-default `scipy_slsqp`
+> backend, which a state-by-state re-solve later showed was returning suboptimal,
+> over-conservative controls on ~12% of the constrained steps while reporting
+> `success=True`. Under the now-default Clarabel backend the same scene and same
+> configuration give **`5.896x`** (and `severity` `0.1528`, not `0.165`). Full analysis,
+> including the objective-value comparison that establishes which solver is correct, is
+> in "Clarabel QP backend added (2026-07-18)" below.
+>
+> **The qualitative conclusion of this section is unchanged and still stands:** a
+> fixed-gain (`k_alpha_base`) artifact, not a legitimate no-safe-corridor refusal. Every
+> supporting leg of that argument was re-verified **bit-identical** under both solvers —
+> the low-gain traversals (`1.1791x` / `1.2463x` at `k_alpha_base` 0.1 / 0.3), the wide
+> corridor collapsing to `1.09x`, and the high-gain infeasibility counts (`2` at 3.0,
+> `40` at 10.0). Narrow-at-default is still ~5.4x slower than wide-at-default, so the
+> corridor is still being navigated far too conservatively for reasons that are about the
+> gain, not the geometry. The mechanism is real and still dominant; only its magnitude
+> was overstated.
+>
+> The original numbers below are **left exactly as recorded** rather than edited in
+> place — this is a visible correction, not a rewrite of what was measured at the time.
+
 Follow-up to the eval-harness fix above, addressing "Not done" item 1: is the
 `COV_INFLATE` near-halt finding a legitimate no-safe-corridor refusal, a `k_alpha_base`
 fixed-gain artifact, or the QP hitting its infeasibility fallback? Only `eval_cbf_modes.py`
@@ -636,3 +659,197 @@ direct unit test — it's exercised indirectly through every `test_cbf_cov_infla
 regression.py` rollout (thousands of real solves, all passing), but there's no isolated
 test asserting its output against a hand-solved QP. Worth adding once the Clarabel swap
 happens, so both backends can be checked against the same known-good solution.
+**Update (2026-07-18) — now covered.** The swap happened; see "Clarabel QP backend added"
+below. `tests/test_cbf_qp_backends.py` asserts both backends against hand-solved QPs.
+Writing it immediately caught a sign error in the *test's* own setup — both backends
+failed identically, which is what identified the test rather than the code as wrong.
+Worth recording, since an identical failure across two unrelated solvers was the first
+direct evidence they implement the same constraint.
+
+## Clarabel QP backend added (2026-07-18)
+
+**Scope.** Solver mechanics only. `collision_cone.py`, `ellipsoid.py`, and
+`semantic_weighting.py` are untouched — the geometry was already verified and did not
+need to move. Changed: `src/cbf/qp_filter.py` (new backend + docstring),
+`requirements.txt`/`environment.yml` (new pinned dep), root `conftest.py` (new
+`--solver` option), `tests/test_cbf_cov_inflate_regression.py` (threads the selected
+solver through; no assertion values touched), and one new test module.
+
+**What changed.** `clarabel==0.11.1` is now a pinned dependency (pure Rust-compiled
+manylinux wheel — installs in seconds, needs no CUDA and no compiler, which was the main
+practical worry). `_solve_clarabel` is registered alongside `_solve_scipy_slsqp` in
+`_SOLVERS` (`src/cbf/qp_filter.py:175`). **The SLSQP path is unchanged and still
+selectable**. `CBFQPConfig.solver` defaulted to `"scipy_slsqp"` when this section was
+first written; it was flipped to `"clarabel"` later the same day — see "Resolved"
+under "Verdict" below.
+
+**Reformulation.** Clarabel's standard conic form is
+`min (1/2)x'Px + q'x s.t. Ax + s = b, s in K`, with `x = u`:
+
+- *Objective.* `||u - u_ref||^2 = u'u - 2 u_ref'u + const`; the constant doesn't move the
+  argmin, so `P = 2I`, `q = -2 u_ref`. Note this is 2x `_solve_scipy_slsqp`'s objective
+  (it minimizes `0.5*||u - u_ref||^2`) — same argmin, different reported objective value.
+  Nothing currently compares objective values across backends, but it would bite if
+  anything did.
+- *CBF rows.* Upstream asserts `w_i'u >= -(k_alpha_i/2) h_i`, i.e. `w @ u + rhs >= 0` with
+  `rhs = 0.5*k_alpha*h`. A nonnegative cone gives `s >= 0`, so a row reads `A x <= b`;
+  negating yields `A_cbf = -w`, `b_cbf = rhs`. One row per active splat, all stacked into
+  a single `NonnegativeConeT(n_active)` — the upstream active mask has already done the
+  stacking. Because the active set is gated on `h <= 0`, every `rhs` entry is `<= 0`.
+- *Actuator bound.* `||u|| <= a_max` goes in as a genuine `SecondOrderConeT(4)` — not a
+  linear row, not a per-axis box. `A_soc = [0; -I]`, `b_soc = [a_max, 0, 0, 0]`, so
+  `s = b - A u = [a_max; u]`, i.e. `a_max >= ||u||`. This was the entire reason Clarabel
+  was preferred over OSQP/quadprog in the first place.
+
+**Status mapping.** Strict: only `SolverStatus.Solved` counts as success; every other
+status returns `infeasible=True` and routes into the *existing* `_max_braking()` fallback
+at `qp_filter.py:259-260`. No second fallback mechanism was built. The strictness was a
+deliberate call with a flagged risk — that `AlmostSolved` (reduced-tolerance convergence)
+might fire often and inflate `infeasible_count`. **It did not fire once.** Across every
+rollout below, the only statuses observed were `Solved` and `PrimalInfeasible`, so the
+strict-vs-lenient question turned out to be empirically moot on these scenes. Recording
+that as a measured non-issue, not a settled principle — it could differ on real geometry.
+
+**Test comparison.** Both backends, identical scenes, `--solver` selecting the backend:
+
+| Scene / gain | metric | `scipy_slsqp` | `clarabel` | delta |
+|---|---|---|---|---|
+| narrow, k=1.0 | `reached_goal` | True | True | — |
+| | `infeasible_count` | 0 | 0 | — |
+| | `severity` | 0.164610 | 0.152777 | −7.19% |
+| | **`time_ratio`** | **11.9104** | **5.8955** | **−50.50%** |
+| | `path_length_ratio` | 1.0010 | 1.0015 | +0.05% |
+| | `near_miss` | 1 | 1 | — |
+| wide, k=1.0 | all metrics | — | — | **bit-identical** |
+| narrow, k=3.0 | `reached_goal` / `infeasible_count` | False / 2 | False / 2 | — |
+| narrow, k=10.0 | `reached_goal` / `infeasible_count` | False / 40 | False / 40 | — |
+| narrow, k=0.1 | `time_ratio` | 1.1791 | 1.1791 | **bit-identical** |
+| narrow, k=0.3 | `time_ratio` | 1.2463 | 1.2463 | **bit-identical** |
+
+`reached_goal` and `infeasible_count` agree **exactly everywhere**, including the
+`PrimalInfeasible` counts landing on precisely SLSQP's `2` and `40` — two unrelated
+algorithms declaring infeasibility on the same steps is strong evidence the reformulation
+is faithful. Every gain in the sweep is bit-identical except one. **The entire divergence
+is the single default-gain narrow-corridor point, where `time_ratio` halves.**
+
+**Which solver is right?** Answered directly rather than assumed: re-solving every
+sub-problem of the narrow k=1.0 rollout with *both* backends and comparing objective
+values and constraint satisfaction at identical states.
+
+```
+=== rollout driven by scipy_slsqp  (1478 both-feasible steps) ===
+  objective ||u-u_ref||^2 : slsqp mean 1.024932 | clarabel mean 1.022364
+  max objective excess of clarabel over slsqp : +3.765e-08
+  max objective excess of slsqp over clarabel : +7.575e-02
+  min CBF slack (w@u+rhs, must be >= 0): slsqp -9.303e-04 | clarabel -9.303e-04
+  max ||u||  (bound 1.0)               : slsqp 0.999833 | clarabel 0.999818
+```
+
+Clarabel never exceeds SLSQP's objective by more than `3.8e-08` (float noise), while
+SLSQP exceeds Clarabel's by up to `7.6e-02` on ~12% of steps. Both respect the actuator
+bound; both carry the same small `-9.3e-04` worst-case CBF slack, so neither is buying
+speed by violating constraints. **SLSQP was returning suboptimal — over-conservative —
+controls on a minority of constrained steps while reporting `success=True`.** Driving the
+same rollout with Clarabel and re-solving with SLSQP, the two agree to `1.6e-09`: SLSQP's
+suboptimality is state-dependent, appearing only on the hard states its own trajectory
+wanders into. That is a self-reinforcing loop, which is why a ~12%-of-steps defect
+compounds into a 2x traversal time.
+
+**What this does to the COV_INFLATE conclusion.** The qualitative finding — *fixed-gain
+artifact, not a legitimate no-safe-corridor refusal* — **survives intact, and every leg of
+its supporting argument is bit-identical under Clarabel**: low gains still traverse
+easily (1.18x/1.25x), the wide corridor still collapses to 1.09x, infeasibility still
+appears only at gains well above default with the same counts. Narrow-at-default is still
+~5.4x slower than wide-at-default, so the corridor is still being navigated far too
+conservatively for geometric reasons.
+
+What changes is the *magnitude*: roughly half of the headline "11.91x pathological
+slowdown" was SLSQP suboptimality, not the fixed-gain mechanism. The mechanism is real
+and still dominant; the number overstated it. Stating that plainly because it is a
+correction to a previously recorded result, not a footnote.
+
+**Verdict at the time of the swap: default NOT changed, pinned values NOT updated.** The
+pre-agreed rule was to flip `CBFQPConfig.solver` to `clarabel` only if the regression came
+back clean, where a >~2% metric shift counts as not-clean. A 50% `time_ratio` move is far
+outside that, so the swap was left selectable-but-not-default pending a decision. The
+evidence said Clarabel is the correct solver and SLSQP the inaccurate one — but "the new
+solver is right and the old recorded number was inflated" is a research call about a
+recorded finding, not a coding call, so it was flagged rather than silently applied.
+
+**Resolved (2026-07-18): the swap was accepted on the strength of the state-by-state
+re-solve above.** `CBFQPConfig.solver` now defaults to `"clarabel"`
+(`src/cbf/qp_filter.py:50`). `scipy_slsqp` is retained as a valid, still-tested fallback
+backend — it is no longer the default, but it is not deprecated and its code path is
+unchanged.
+
+Because the two backends genuinely produce different (both real) numbers on exactly one
+scenario, the two affected pins are now keyed on the backend in
+`NARROW_K1_EXPECTED` (`tests/test_cbf_cov_inflate_regression.py`), so **both** backends
+stay regression-guarded and both suites run green:
+
+| assertion (narrow, k=1.0) | `clarabel` (default, trusted) | `scipy_slsqp` (fallback) |
+|---|---|---|
+| `severity` | `0.1528` | `0.1646` |
+| `time_ratio` | `5.896` | `11.91` |
+
+Every other pinned value is single-valued and untouched — confirmed bit-identical across
+backends. The comment above that dict is explicit that SLSQP's row is retained to guard
+the fallback path, **not** because it is the number to quote.
+
+The root `conftest.py` `--solver` default is now read off `CBFQPConfig` rather than
+hardcoded, so a plain no-flag run always exercises whatever the library actually defaults
+to. A hardcoded literal there would have silently kept the default run on SLSQP after
+this flip — and a run on the wrong backend looks identical to a run on the right one
+until an assertion happens to disagree.
+
+```
+$ python3 -m pytest -q --ignore=tests/test_semantic_decoder_load.py
+22 passed in 174.49s
+
+$ python3 -m pytest -q --ignore=tests/test_semantic_decoder_load.py --solver=scipy_slsqp
+22 passed in 186.04s
+```
+
+**Performance.** Per-step wall clock is a wash — 0.345ms (SLSQP) vs 0.370ms (Clarabel) on
+the narrow scene, 0.137ms vs 0.133ms on the wide. Clarabel is marginally slower per solve
+but needed 670 steps where SLSQP needed 1478, so the *rollout* is ~2x faster end to end.
+Caveat: `wall_clock_per_step` times the whole `filt.step()` — KD-tree query and cone
+computation included — not the solve alone, so none of these numbers isolate the solver.
+No solver-only timer exists; adding one to the free-form `diagnostics` dict is the natural
+place if per-solve cost ever matters.
+
+**New tests.** `tests/test_cbf_qp_backends.py` — five hand-solved QPs (slack constraint,
+single binding CBF row, SOC-binding radial projection, stacked active rows, genuinely
+infeasible) run against both backends via parametrization, plus a randomized
+200-instance cross-check between them. The parametrization is also the guard against the
+failure mode where Clarabel is silently never exercised. One tolerance is deliberately
+looser: where the *curved* SOC boundary is the binding constraint, Clarabel lands ~1e-5
+off the exact radial projection while SLSQP hits it to float32 precision — an
+interior-point method approaches a nonlinear active constraint from the interior and
+stops at its convergence tolerance. Documented as `SOC_TOL` rather than quietly widening
+the global tolerance.
+
+Root `conftest.py` gained a `--solver` option, chosen over an env var so a run's backend
+is visible in the command line and can't be left set by accident between runs. Its
+default is read off `CBFQPConfig` rather than hardcoded, so a no-flag run always tests
+the library's actual default.
+
+Two harness call sites (`eval_cbf_modes.py`, `costmap_cbf.py`) previously read
+`cfg_dict.get("solver", "scipy_slsqp")`; that literal fallback would have silently pinned
+SLSQP for any config omitting the key even after the default moved, so both now defer to
+`CBFQPConfig`'s own default instead. `configs/cbf/room0_cbf.py` likewise no longer pins
+`solver` explicitly — flagging that as a real behavior change to the documented
+`costmap_cbf.py`/`eval_cbf_modes.py` commands, which now run Clarabel.
+
+```
+$ python3 -m pytest -q --ignore=tests/test_semantic_decoder_load.py
+22 passed in 116.94s
+
+$ python3 -m pytest -q --ignore=tests/test_semantic_decoder_load.py --solver=clarabel
+1 failed, 21 passed in 123.78s
+```
+
+The single failure is the narrow k=1.0 `severity` assertion analyzed above — the first of
+that test's four assertions to trip; `time_ratio` never evaluated because `severity`
+precedes it, which is why the 11.91→5.90 shift needed a separate run to surface. Both
+runs on `numpy 2.2.6` / `scipy 1.15.2` / `clarabel 0.11.1` / `pytest 6.2.5`.

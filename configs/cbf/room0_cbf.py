@@ -59,5 +59,6 @@ config = dict(
         cov_inflate_gamma_sweep=[0.5, 1.0, 2.0],
     ),
 
-    solver="scipy_slsqp",
+    # Omitted deliberately: defers to CBFQPConfig.solver's default ("clarabel" as of
+    # 2026-07-18). Set explicitly to "scipy_slsqp" to pin the fallback backend.
 )

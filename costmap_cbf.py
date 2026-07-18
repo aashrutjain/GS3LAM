@@ -56,7 +56,9 @@ def build_filter_from_config(cfg_dict: dict, ply_path_override: str | None, sema
         cov_inflate_gamma=cfg_dict["semantic"].get("cov_inflate_gamma", 1.0),
         zero_policy=zero_policy,
         spatial_filter=spatial_cfg,
-        solver=cfg_dict.get("solver", "scipy_slsqp"),
+        # No literal fallback: an absent "solver" key defers to CBFQPConfig's own
+        # default, so this never silently pins a backend the library has moved off.
+        **({"solver": cfg_dict["solver"]} if "solver" in cfg_dict else {}),
     )
     return CBFSafetyFilter(splats, qp_cfg)
 

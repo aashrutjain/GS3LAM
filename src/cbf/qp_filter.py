@@ -9,22 +9,34 @@ QP (paper's formulation, k_alpha renamed from p_k -- see collision_cone.py):
            ||u|| <= a_max
 
 Solver: kept behind CBFQPConfig.solver as a string key into a small registry
-(see _SOLVERS below) rather than a hard dependency -- this was an explicitly
-DEFERRED decision (see the Stage 3 design plan): the actuator bound is a norm
-(second-order-cone) constraint, not plain-linear, so a general QP solver
-(OSQP/quadprog) needs it approximated as a per-axis box, while the paper's own
-choice (Clarabel) handles SOCP natively. The default backend here
-("scipy_slsqp") adds no new pinned dependency (scipy is already required by
-spatial_filter.py) and is fine for this control-dimension (u in R^3, one
-inequality row per active splat) -- swap in a Clarabel/OSQP backend later by
-adding an entry to _SOLVERS; this is a stopgap, not a claim that scipy_slsqp
-is the right production choice for a real-time TurtleBot4 loop.
+(see _SOLVERS below). Two backends exist:
+
+  "clarabel"    -- interior-point conic solver, the paper's own choice. Handles
+                   the ||u|| <= a_max actuator bound natively as a second-order
+                   cone, which is the reason it was preferred: that bound is a
+                   norm constraint, not plain-linear, so a general QP solver
+                   (OSQP/quadprog) would need it approximated as a per-axis box
+                   -- conservative and anisotropic, since a box clips the
+                   corners of the ball.
+  "scipy_slsqp" -- the original stopgap, retained and still selectable. Adds no
+                   dependency beyond scipy (already required by
+                   spatial_filter.py) and handles the norm bound as a general
+                   nonlinear constraint. Kept so the two can be compared, and
+                   because the digit-exact regression numbers in
+                   tests/test_cbf_cov_inflate_regression.py were produced by it.
+
+Both share one signature and one failure contract: return
+(u_safe, infeasible, diagnostics), where a truthy `infeasible` makes the caller
+in CBFSafetyFilter.step fall back to _max_braking(). Neither backend applies
+that fallback itself.
 """
 
 from dataclasses import dataclass, field
 from typing import Any
 
+import clarabel
 import numpy as np
+from scipy import sparse
 from scipy.optimize import minimize
 from scipy.stats import chi2
 
@@ -47,7 +59,7 @@ class CBFQPConfig:
     cov_inflate_gamma: float = 1.0                      # gamma for COV_INFLATE -- a value to sweep, not a settled constant
     zero_policy: ZeroSafetyPolicy = ZeroSafetyPolicy.WARN_ONLY
     spatial_filter: SpatialFilterConfig = field(default_factory=SpatialFilterConfig)
-    solver: str = "scipy_slsqp"
+    solver: str = "clarabel"
 
 
 def build_baseline_inputs(splats: SplatField, cfg: CBFQPConfig) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -172,8 +184,78 @@ def _solve_scipy_slsqp(
     return result.x.astype(np.float32), (not result.success), diagnostics
 
 
+def _solve_clarabel(
+    u_ref: np.ndarray,
+    w_active: np.ndarray,
+    h_active: np.ndarray,
+    k_alpha_active: np.ndarray,
+    a_max: float,
+) -> tuple[np.ndarray, bool, dict]:
+    """Clarabel backend. Same QP as _solve_scipy_slsqp, restated in Clarabel's
+    standard conic form:
+
+        min (1/2) x^T P x + q^T x   s.t.   A x + s = b,  s in K
+
+    with x = u. The three pieces:
+
+      Objective. ||u - u_ref||^2 = u^T u - 2 u_ref^T u + const; the constant
+      doesn't move the argmin, so P = 2I and q = -2 u_ref. Note this is 2x
+      _solve_scipy_slsqp's objective (it minimizes 0.5*||u - u_ref||^2) -- same
+      argmin, different objective value. Only matters if you compare reported
+      objective values across backends, which nothing currently does.
+
+      CBF rows. Upstream asserts w_i^T u >= -(k_alpha_i/2) h_i, i.e.
+      w @ u + rhs >= 0 with rhs = 0.5 * k_alpha * h. A nonnegative cone means
+      s >= 0, so a row reads A x <= b; negating gives A_cbf = -w, b_cbf = rhs.
+      One row per active splat, all in a single NonnegativeConeT -- the active
+      mask upstream has already done the stacking. Because the active set is
+      gated on h <= 0 (collision_cone.py), every rhs entry is <= 0.
+
+      Actuator bound. ||u|| <= a_max is a genuine second-order cone, NOT a
+      linear row and not a per-axis box. SecondOrderConeT(4) requires
+      s = b - A x to satisfy s[0] >= ||s[1:]||, so with A_soc = [0; -I] and
+      b_soc = [a_max, 0, 0, 0] we get s = [a_max; u], i.e. a_max >= ||u||.
+
+    Status handling is strict: only SolverStatus.Solved counts. Everything else
+    -- including AlmostSolved, which converges only to reduced tolerance --
+    returns infeasible=True and lets the caller brake. See PROGRESS.md for the
+    measured frequency of each status on the regression scenes.
+    """
+    # Cast at the solver boundary, as the SLSQP path does: everything upstream is
+    # float32, and Clarabel's CFFI layer expects float64 throughout.
+    u_ref = u_ref.astype(np.float64)
+    w_active = w_active.astype(np.float64)
+    h_active = h_active.astype(np.float64)
+    k_alpha_active = k_alpha_active.astype(np.float64)
+    n_active = int(w_active.shape[0])
+    rhs = 0.5 * k_alpha_active * h_active  # (n_active,), <= 0 on the gated active set
+
+    P = sparse.csc_matrix(2.0 * np.eye(3))  # already upper-triangular; Clarabel reads that half
+    q = -2.0 * u_ref
+
+    A_soc = np.vstack([np.zeros((1, 3)), -np.eye(3)])  # (4,3): s = b - A u = [a_max; u]
+    A = sparse.csc_matrix(np.vstack([-w_active, A_soc]))
+    b = np.concatenate([rhs, np.array([a_max, 0.0, 0.0, 0.0])])
+    cones = [clarabel.NonnegativeConeT(n_active), clarabel.SecondOrderConeT(4)]
+
+    settings = clarabel.DefaultSettings()
+    settings.verbose = False  # otherwise every one of thousands of rollout solves prints a banner
+    solution = clarabel.DefaultSolver(P, q, A, b, cones, settings).solve()
+
+    solved = solution.status == clarabel.SolverStatus.Solved
+    diagnostics = {
+        "solver": "clarabel",
+        "success": bool(solved),
+        "message": str(solution.status),
+        "status": str(solution.status),
+        "n_active": n_active,
+    }
+    return np.asarray(solution.x, dtype=np.float32), (not solved), diagnostics
+
+
 _SOLVERS = {
     "scipy_slsqp": _solve_scipy_slsqp,
+    "clarabel": _solve_clarabel,
 }
 
 
