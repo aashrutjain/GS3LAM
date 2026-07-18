@@ -853,3 +853,126 @@ The single failure is the narrow k=1.0 `severity` assertion analyzed above — t
 that test's four assertions to trip; `time_ratio` never evaluated because `severity`
 precedes it, which is why the 11.91→5.90 shift needed a separate run to surface. Both
 runs on `numpy 2.2.6` / `scipy 1.15.2` / `clarabel 0.11.1` / `pytest 6.2.5`.
+
+## Real-data VLM safety-score consistency check (2026-07-18)
+
+Answers the Gap Tracking item "Real Replica-derived hero-frame version of the VLM
+consistency check" — the 2026-07-09 run (`vlm_consistency_check.py`) used stock photos
+because no Replica data existed in this checkout; this re-runs the identical
+methodology against real Replica RGB frames. Standalone Stage 2 work, does not touch
+`src/cbf/`.
+
+**Data acquisition.** `huggingface.co/datasets/3David14/GS3LAM-Replica` (the dataset
+this repo's README points to) turned out to be a single non-gated 12.77GB zip with no
+per-scene file to selectively download — downloading it whole would have violated the
+"small subset, not the full dataset" instruction. The underlying CDN supports HTTP
+Range requests (confirmed live: `206 Partial Content`), so a small in-memory
+`HTTPRangeFile` (stdlib `zipfile.ZipFile` fed a `requests`-backed seekable object) was
+used to read only the archive's central directory (4 requests, ~8.4MB, for a full
+64,051-entry listing) and then extract individual frames on demand (~400KB and 4
+requests per frame). Total data pulled for this whole experiment, listing plus all
+frames plus final crops: under 15MB — nowhere near the full archive. No
+`huggingface_hub` install or auth was needed (dataset is public). This technique isn't
+committed anywhere (it lived in a scratch script for this session) — worth promoting to
+a small repo utility if real Replica data gets pulled again before Stage 1 training
+access resumes in the fall.
+
+**Scene and objects.** Used `room0` only — a furnished waiting-room/lounge scene, not
+the original stock set's more generic object types, so the object list was adapted
+rather than force-matched (per instruction). Ten frames spread across the ~2000-frame
+sequence (`frame000000` … `frame001800`, step 200) were pulled and inspected directly
+(by eye) to find a real safety gradient; a second scene was not needed since `room0`
+alone yielded ten clearly distinct objects across safe/mid/hazard categories. Each
+object was rough-cropped with a single eyeballed `PIL.Image.crop()` bounding box from
+whichever sampled frame showed it best — no masks, no convex-hull background
+suppression, matching the original methodology's rigor level:
+
+| # | Object | Source frame | Category |
+|---|---|---|---|
+| 01 | Plain wall segment | frame000000 | safe |
+| 02 | Grey carpet floor | frame000200 | safe |
+| 03 | Heavy wood credenza/sideboard | frame000000 | safe |
+| 04 | Sofa back cushion | frame000600 | safe |
+| 05 | Round tufted ottoman | frame000000 | safe |
+| 06 | Upholstered wingback accent chair | frame000800 | mid |
+| 07 | Round wood side table (thin metal legs) | frame000000 | mid |
+| 08 | Ceramic vase (dried-flower arrangement) | frame001000 | hazard |
+| 09 | Real power cable snaking across the rug | frame001200 | hazard |
+| 10 | Wall-mounted multi-pane glass panel | frame000000 | hazard |
+
+Object 02 (carpet floor) was added beyond the original ten-object list deliberately: it
+is the direct control the original finding's own explanation calls for — if the
+prompt's "flat solid ground" anchor language is what made the *wall* ambiguous, a
+literal floor patch should be the cleanest possible positive case to contrast it
+against. Object 09 (cable) is a real environmental object (a power cord crossing the
+rug, visible identically across multiple sampled frames, not a rendering artifact),
+not a staged prop — closer to what a real Stage 2 hero-frame crop would look like than
+the original studio cable photo.
+
+**Model/config: `gemini-3.5-flash`, matching current production**
+(`vlm_safety_score.py:34`), not the original consistency-check script's
+`gemini-flash-latest` rolling alias — that alias predates the 2026-07-12 production
+pinning decision. Everything else held identical to the original run for a clean
+comparison: `PROMPT` reused verbatim, `temperature=0.2`, `max_output_tokens=1024`,
+`thinking_config=ThinkingConfig(thinking_budget=0)`, 5 queries/object. A 1-call smoke
+test confirmed the model/config path before the full run. New script:
+`vlm_consistency_check_real.py` (sibling to the original, which is untouched — both
+image sets and both result files now coexist for direct comparison). 50/50 calls
+succeeded on the first attempt, no retries triggered.
+
+**Results:**
+
+| Object | Scores | Mean | StdDev |
+|---|---|---|---|
+| 01 wall (real) | 1.00 ×5 | 1.000 | 0.000 |
+| 02 carpet floor (real) | 0.95 ×5 | 0.950 | 0.000 |
+| 03 credenza, heavy wood | 0.00 ×5 | 0.000 | 0.000 |
+| 04 sofa cushion | 0.15 ×5 | 0.150 | 0.000 |
+| 05 ottoman | 0.10, 0.15, 0.10, 0.10, 0.10 | 0.110 | 0.022 |
+| 06 accent chair | 0.10, 0.00, 0.10, 0.10, 0.10 | 0.080 | 0.045 |
+| 07 wood side table | 0.00 ×5 | 0.000 | 0.000 |
+| 08 ceramic vase | 0.10 ×5 | 0.100 | 0.000 |
+| 09 cable | 0.15 ×5 | 0.150 | 0.000 |
+| 10 glass panel | 0.00 ×5 | 0.000 | 0.000 |
+
+Full raw data: `assets/vlm_consistency_real/results.json` (original stock-photo data
+unchanged at `assets/vlm_consistency/results.json`).
+
+**Comparison against the 2026-07-09 stock-photo run — does the finding replicate?**
+Partially, and with an important reversal. The *shape* of the original finding
+(overwhelming stability with a small minority of exceptions) does replicate: 8/10
+objects were perfectly stable here too. But the *specific* finding does not — the wall,
+the one unstable object in the original run (bimodal 0.0/1.0, mean 0.4, stdev 0.55),
+was the single most confidently stable object in this run (1.000, stdev 0.000, tied for
+the highest score alongside the floor). Instability instead showed up on two different,
+previously-rock-solid categories (ottoman and accent chair — soft/mid-tier furniture,
+the same category the original run's `chair_wooden_mid`/`pottedplant_mid` scored with
+zero variance), and at an order of magnitude smaller scale: single-query jitter of
+±0.05 within a tight cluster (stdev 0.02–0.04), not a full swing between the scale's two
+endpoints. No object in this run showed wall-like bimodal instability.
+
+**What this means.** The original wall-instability finding does not look like a general
+property of "wall" as a semantic category under this prompt — a different real wall
+photo, in situ with ambient room context rather than isolated on a studio background,
+scored a clean, unanimous 1.0 across all 5 runs, alongside a literal floor patch (0.95,
+also zero variance) that was added specifically as the "flat solid ground" positive
+control the original hypothesis implied. That undercuts the original
+"ground-anchored-language" explanation as a *general* mechanism — it may instead have
+been specific to that one stock photo (its framing, lighting, or how "ground-like" that
+particular wall read), not a property that reliably reproduces across different wall
+images. Separately, the small jitter that did appear (ottoman, accent chair) is small
+enough that it's hard to distinguish from ordinary run-to-run sampling noise at
+temperature 0.2 rather than a second genuine bimodal-instability case — worth
+re-testing at a higher temperature before treating it as a finding in its own right (the
+original run's own temperature-0.2-suppresses-variance caveat still applies here
+unchanged).
+
+One more real-data-only observation, consistent with (not contradicting) the original
+run: non-drivable solid furniture scored low regardless of how heavy/stable it actually
+is (credenza and side table both 0.000, matching the original's `bookshelf_heavy_safe`
+scoring 0.000) — the prompt's 1.0 anchor is "flat solid ground," not "stable object," so
+solid furniture that isn't literally drivable ground reliably gets pushed toward 0
+rather than scored as safely-avoidable-but-solid. This is a scale-calibration property
+of the prompt, not new instability, and was already implicitly present in the original
+run's bookshelf result — real data just reconfirms it on a second, independent heavy
+object.

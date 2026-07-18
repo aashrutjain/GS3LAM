@@ -1,0 +1,112 @@
+{
+  "01_wall_real_safe": {
+    "scores": [
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ],
+    "mean": 1.0,
+    "stdev": 0.0
+  },
+  "02_carpet_floor_real_safe": {
+    "scores": [
+      0.95,
+      0.95,
+      0.95,
+      0.95,
+      0.95
+    ],
+    "mean": 0.95,
+    "stdev": 0.0
+  },
+  "03_credenza_wood_heavy_safe": {
+    "scores": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "mean": 0.0,
+    "stdev": 0.0
+  },
+  "04_sofa_cushion_soft_safe": {
+    "scores": [
+      0.15,
+      0.15,
+      0.15,
+      0.15,
+      0.15
+    ],
+    "mean": 0.15,
+    "stdev": 0.0
+  },
+  "05_ottoman_soft_safe": {
+    "scores": [
+      0.1,
+      0.15,
+      0.1,
+      0.1,
+      0.1
+    ],
+    "mean": 0.11,
+    "stdev": 0.022360679774997894
+  },
+  "06_accent_chair_mid": {
+    "scores": [
+      0.1,
+      0.0,
+      0.1,
+      0.1,
+      0.1
+    ],
+    "mean": 0.08,
+    "stdev": 0.044721359549995794
+  },
+  "07_side_table_wood_mid": {
+    "scores": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "mean": 0.0,
+    "stdev": 0.0
+  },
+  "08_vase_ceramic_fragile_hazard": {
+    "scores": [
+      0.1,
+      0.1,
+      0.1,
+      0.1,
+      0.1
+    ],
+    "mean": 0.1,
+    "stdev": 0.0
+  },
+  "09_cable_hazard": {
+    "scores": [
+      0.15,
+      0.15,
+      0.15,
+      0.15,
+      0.15
+    ],
+    "mean": 0.15,
+    "stdev": 0.0
+  },
+  "10_glass_panel_hazard": {
+    "scores": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "mean": 0.0,
+    "stdev": 0.0
+  }
+}
