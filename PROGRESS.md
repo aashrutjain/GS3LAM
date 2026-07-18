@@ -184,17 +184,18 @@ so even a CPU-only torch install couldn't construct the real class to dynamicall
   run against real trained weights.
 - A regression test exists at `tests/test_semantic_decoder_load.py` (constructs
   `src.Decoder.SemanticDecoder` twice, round-trips a state_dict with `strict=True`,
-  asserts no missing/unexpected keys) but has **not been executed** — it needs a
-  CUDA-capable environment because of the `.cuda()` issue above. Run it once GPU access
-  is available; until then this is a TODO, not a silently-skipped step.
+  asserts no missing/unexpected keys). At the time this was written it had **not been
+  executed** because it needs a CUDA-capable environment, per the `.cuda()` issue
+  below. **Now executed (2026-07-18) — see "SemanticDecoder CPU-construction fix"
+  below** — it was the hardcoded `.cuda()`, not the absence of GPU access per se, that
+  blocked it; removing that let it run and pass on this CPU-only sandbox.
 
 **New finding not in the original two bugs:** `src/Decoder.py:33` hardcodes `.cuda()` in
 `SemanticDecoder.__init__`, unconditionally, regardless of the caller's intended device.
 On the real dev machine (A2000 GPU, per `CLAUDE.md`) this is harmless, but it means the
 module can never be constructed on a CPU-only machine — including this sandbox, which
-blocked dynamic verification above. Not fixed here (out of the two-bug scope, and
-`src/Decoder.py` wasn't touched, only imported from) — logged as a TODO for whoever next
-has GPU access.
+blocked dynamic verification above. **Fixed (2026-07-18) — see "SemanticDecoder
+CPU-construction fix" below.**
 
 **Real Stage 1 output search (requested this session):** searched this repo (`logs/`
 and `data/` don't exist in this checkout), the entire `/mnt/c/Users/jaina7/projects` tree,
@@ -976,3 +977,52 @@ rather than scored as safely-avoidable-but-solid. This is a scale-calibration pr
 of the prompt, not new instability, and was already implicitly present in the original
 run's bookshelf result — real data just reconfirms it on a second, independent heavy
 object.
+
+## SemanticDecoder CPU-construction fix (2026-07-18)
+
+Fixes the hardcoded-`.cuda()` finding flagged above ("New finding not in the original
+two bugs") — a device-flexibility fix, not a change to the classifier-loading logic,
+which is untouched and remains separately verified as before.
+
+**The change** (`src/Decoder.py`, `SemanticDecoder.__init__` only —
+`SemanticDecoder_MLP` in the same file still hardcodes `.cuda()` on its own `fc4` layer,
+untouched, out of scope for this fix): added an optional `device` parameter, default
+`None`. When `None`, resolves to `"cuda" if torch.cuda.is_available() else "cpu"`;
+`.cuda()` replaced with `.to(device)`. Every existing call site
+(`src/GS3LAM.py:103`, `visualizer/{export_mesh,offline_recon,online_recon}.py`,
+`vlm_safety_score.py`, `tests/test_semantic_decoder_load.py`) constructs with only the
+two positional args, no `device` override, so all of them go through the auto-detect
+path. On the real A2000 dev box `torch.cuda.is_available()` is expected to be `True`
+(per `CLAUDE.md`'s pinned CUDA env), which resolves to `device="cuda"` — the same place
+the old hardcoded `.cuda()` landed. This was **not** dynamically confirmed on that real
+GPU box (none available this session, same constraint as everything else this summer)
+— it's confirmed by inspection (no call site passes a conflicting `device`, and
+`.to("cuda")` vs `.cuda()` are documented equivalent moves), not by an actual run on
+the hardware. Flagging that distinction rather than rounding it up.
+
+**Verification actually performed, live, not just by inspection:** this sandbox has no
+GPU and previously had no torch install at all. A CPU-only torch wheel
+(`torch==2.13.0+cpu`, ~175MB, `--index-url https://download.pytorch.org/whl/cpu`) was
+installed into this plain-system Python — **not** the pinned `cudatoolkit-dev=11.7.0`
+conda env `CLAUDE.md` protects, which was not touched. With that installed:
+- `tests/test_semantic_decoder_load.py`, previously requiring `--ignore` because
+  `SemanticDecoder.__init__`'s hardcoded `.cuda()` made it uncollectable/failing on any
+  CPU-only machine, now **runs and passes directly**, no `--ignore` flag:
+  `python3 -m pytest tests/test_semantic_decoder_load.py -v` → 1 passed. This
+  constructs `SemanticDecoder(16, 256)` twice through the new default (auto-detect →
+  `"cpu"` here), and does a real `state_dict()` round-trip with `strict=True`, asserting
+  no missing/unexpected keys — genuine dynamic execution of the class, not a dry read.
+- Full suite re-run for regressions: `python3 -m pytest -q` → **23 passed** (up from the
+  prior 22 — this test is no longer excluded), nothing else broke.
+
+**What this does not verify:** the real-hardware `cuda` branch itself (see above,
+inspection only, not run), and — same caveat as the original classifier-loading fix —
+there is still no real `classifier.pth` anywhere on any machine checked this summer, so
+this remains untested against real trained weights regardless of device.
+
+**One more thing worth a decision, not fixed silently:**
+`tests/test_semantic_decoder_load.py`'s own docstring (lines 9-12) still says the test
+was "NOT executed as of this writing... cannot be constructed here," which is now
+stale — it just ran and passed. Left as-is since the instruction for this fix was
+scoped to `src/Decoder.py` and this file; flagging rather than editing a file outside
+that scope.

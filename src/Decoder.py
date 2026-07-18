@@ -1,3 +1,4 @@
+import torch
 from torch import nn
 
 class SemanticDecoder_MLP(nn.Module):
@@ -27,10 +28,13 @@ class SemanticDecoder_MLP(nn.Module):
         return x
 
 class SemanticDecoder(nn.Module):
-    def __init__(self, input_dim, output_dim):
+    def __init__(self, input_dim, output_dim, device=None):
         super().__init__()
 
-        self.conv = nn.Conv2d(input_dim, output_dim, kernel_size=1).cuda()
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        self.conv = nn.Conv2d(input_dim, output_dim, kernel_size=1).to(device)
 
 
     def forward(self, x):
