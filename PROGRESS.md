@@ -1066,3 +1066,109 @@ noisy data..."). `git blame` confirms it is first-pass demo-driver code, lives o
 in place for now — it's not a recorded scope decision, and the fix (drop the cap, or
 make it an explicit CLI arg) belongs with a real Stage 1/2 run, not this doc pass. The
 Method draft describes the intended per-object behavior and excludes the cap.
+
+## Pre-registered head-on scene: first real run, both backends (2026-08-02)
+
+`scenes/prereg_headon.py` recreated and executed. This is the first time a
+pre-registered head-on scene has actually been run in this checkout — the recap
+on 2026-08-02 confirmed no `scenes/prereg_headon.py` and no `results_draft_v1`
+existed anywhere here, so every earlier reference to this scene's outcome was to
+an unpersisted run.
+
+The scene's geometry is derived from a criterion fixed before the rollout (blocking
+hazard + a robot-center lateral corridor set to half the robot footprint radius);
+`R_collar` is solved from that criterion rather than chosen. Scene generated and
+evaluated exactly once, no outcome-driven retuning.
+
+Command: `python3 scenes/prereg_headon.py`
+Env: system Python 3.10.12, `numpy 2.2.6`, `scipy 1.15.2`, `clarabel 0.11.1`.
+The generated `scenes/prereg_headon_seed42.ply` is left untracked, per the existing
+convention that generated scene `.ply` files are ephemeral (the script regenerates
+it deterministically from `seed=42`).
+
+Console output, verbatim:
+
+```
+=== PRE-REGISTERED CRITERION -> DERIVED PARAMETERS ===
+c_base = sqrt(chi2.ppf(0.99,3))      = 3.36821
+robot radius rho                     = 0.160 m
+hazard scale s_h / clutter s_c       = 0.1 / 0.04
+r_phys_hazard = c_base*s_h + rho     = 0.4968 m  (inflated blocking radius)
+path offset from hazard center       = 0.030 m  (6.04% of r_phys_hazard)
+  -> straight-line penetration depth = 0.4668 m  (BLOCKING condition met)
+pre-registered clearance W_center    = rho/2 = 0.080 m  (50% of robot radius)
+  -> DERIVED collar radius R_collar  = 0.8715 m
+  (check) W_center back-computed      = 0.0800 m
+
+wrote scene -> scenes/prereg_headon_seed42.ply  (collar_radius=0.8715, seed=42, offset=0.03)
+
+      solver         mode reached  plen_ratio  time_ratio  severity near_miss infeas
+------------------------------------------------------------------------------------
+    clarabel         NONE    True      1.0003      1.1418   -0.1330         1      0
+    clarabel  ALPHA_SCALE    True      0.9999      1.0597   -0.4251         1      0
+    clarabel  COV_INFLATE   False      0.4416     14.9254    0.7573         0      0
+
+ scipy_slsqp         NONE    True      1.0003      1.1418   -0.1330         1      0
+ scipy_slsqp  ALPHA_SCALE    True      0.9999      1.0597   -0.4251         1      0
+ scipy_slsqp  COV_INFLATE   False      0.4299     14.9254    0.8961         0      0
+
+=== backend agreement (clarabel vs scipy_slsqp) ===
+          NONE: |dtime_ratio|=0.00e+00  |dplen_ratio|=9.54e-08  reached_match=True
+   ALPHA_SCALE: |dtime_ratio|=0.00e+00  |dplen_ratio|=0.00e+00  reached_match=True
+   COV_INFLATE: |dtime_ratio|=0.00e+00  |dplen_ratio|=1.17e-02  reached_match=True
+```
+
+### What the numbers say (observations only — no claim rewritten yet)
+
+**`ALPHA_SCALE` is faster than `NONE` here, and cuts deeper.** time_ratio 1.0597 vs
+1.1418, severity -0.4251 vs -0.1330. Both reach the goal, both on an essentially
+straight path (plen_ratio 0.9999 vs 1.0003 — no lateral departure by either), and both
+log one near-miss. So on this scene the semantically-weighted mode gets there *sooner*
+while penetrating the true confidence ellipsoid *further* than the pure-geometric
+baseline. Severity is the shared true-geometry signed distance in Mahalanobis units, so
+the two are graded against the same boundary.
+
+This is the counterintuitive faster-but-worse-severity pattern, now reproduced on a
+real, persisted, pre-registered scene rather than recalled from an unpersisted run.
+Note it is *not* what the Step 0 narrow-corridor table (2026-07-11) showed: there,
+`ALPHA_SCALE` and `NONE` had an identical time_ratio of 1.06 with the same severity
+gap. Here the severity gap is the same (-0.425 vs -0.133) but the time ratios have
+separated, with `ALPHA_SCALE` the faster of the two.
+
+**Bearing on `ARCHITECTURE.md:101.** That line currently reads "`ALPHA_SCALE` vs `NONE`
+behaved exactly as predicted (same path, slower approach)". Against this run: "same
+path" holds (plen ratios within 4e-4 of each other and of 1.0); "slower approach" does
+not — `ALPHA_SCALE` is faster than `NONE`, which is the opposite of the design
+prediction that a lower safety score should brake harder along the approach axis.
+**Deliberately not edited in this session.** Whether that line gets kept, rewritten, or
+replaced with an explicit "still needs investigation" note is a decision for the next
+session, and it should be made after the constraint-activation trace-through, which was
+also deliberately not attempted here.
+
+**The pre-registered criterion did its job, partly.** Criterion (2) predicted that a
+corridor narrower than the robot's own radius would force "a real deceleration and/or a
+real lateral departure." `NONE` decelerated (1.14) without departing laterally.
+`ALPHA_SCALE` did neither — it neither slowed relative to `NONE` nor routed around,
+it went through. So the scene is materially harder than the earlier too-mild attempt
+(both modes at 1.06 / ~1.00), and it does separate the modes, but not in the predicted
+direction.
+
+**`COV_INFLATE` fails on this scene.** `reached_goal=False` under both backends, with
+plen_ratio 0.44 and time_ratio 14.93 — 14.93 is the max_steps ceiling
+(2000 steps x 0.05 s = 100 s over a 6.70 s oracle), so it exhausted the step budget
+partway along the corridor rather than converging slowly. `infeasible_count=0`, so the
+QP never reported infeasibility or took the `_max_braking()` branch; consistent with
+the 2026-07-11 finding that the crawl is a gain artifact, not a feasibility failure.
+Its severity is the best of the three (+0.76 / +0.90) — it stays well clear, and never
+arrives. Whether the `W_center = rho/2` corridor is simply too tight for gamma=1.0
+inflation is untested; no gain or gamma sweep was run here.
+
+**Backend agreement — clean on the two modes that matter, not clean on `COV_INFLATE`.**
+`NONE` and `ALPHA_SCALE` agree to 0.00e+00 on time_ratio and 9.54e-08 / 0.00e+00 on
+plen_ratio, so the headline comparison above is solver-independent. `COV_INFLATE`
+disagrees materially: |dplen_ratio| = 1.17e-02, and severity differs 0.7573 (clarabel)
+vs 0.8961 (scipy_slsqp) — roughly an 18% spread on a metric the other two modes
+reproduce exactly. Both backends do agree it fails to reach the goal, and both hit the
+same step ceiling. This is recorded, not chased; it is a divergence on a non-converging
+run, so it is the least trustworthy row in the table and should not be quoted without
+this caveat.
