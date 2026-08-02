@@ -232,7 +232,14 @@ if __name__ == "__main__":
             safety_dictionary[obj_id] = score
             print(f"-> Object {obj_id} Safety Score: {score}")
         except Exception as e:
-            print(f"-> Skipping Object {obj_id} due to projection error: {e}")
-            safety_dictionary[obj_id] = 1.0 # Default to safe if it fails
+            print(f"-> Skipping Object {obj_id} due to projection/VLM error: {e}")
+            # Conservative fail-safe: a failed hero-frame projection or VLM call means we
+            # have NO valid safety judgment for this object, so default to 0.0 (treat as a
+            # hazard), matching the 0.0 default already applied to unqueried splats in
+            # broadcast_scores_and_save(). This was previously 1.0 ("completely safe"), an
+            # inverted fail-safe that told the CBF to drive over an object we knew nothing
+            # about. Changed 2026-07-20 — safety-score-scale decision, flagged per CLAUDE.md
+            # and recorded in PROGRESS.md.
+            safety_dictionary[obj_id] = 0.0
         
     broadcast_scores_and_save(plydata, class_ids, safety_dictionary)

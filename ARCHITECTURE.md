@@ -82,7 +82,9 @@ Candidates, neither validated:
   score → more conservative braking. Affects longitudinal approach speed only; doesn't
   change lateral routing around an object.
 - *Covariance inflation.* Scale the splat's effective covariance by
-  `Σ_eff = Σ · (1 + γ(1 − safety))`, so low-safety objects cast a wider "semantic
+  `Σ_eff = Σ · (1 + λ(1 − safety))` (λ is the inflation coefficient — distinct from the
+  collision-cone quantity γ := rᵀAr − c² above; the codebase variable is still named
+  `cov_inflate_gamma`), so low-safety objects cast a wider "semantic
   shadow" that the collision cone routes around laterally, not just brakes for. This
   is a hypothesis, not a published result — it needs to be derived carefully and
   validated against the actual collision-cone math before being treated as settled.
@@ -204,7 +206,7 @@ any of the following — keep this table current as new papers show up:
 |---|---|---|
 | SAFER-Splat (arXiv:2409.09868) | Distance-based CBF per splat, purely geometric, no semantic differentiation | No VLM anywhere; this project adds the semantic safety layer on top of a geometric CBF |
 | Tscholl et al. (arXiv:2509.14421) | Collision-cone CBF, purely geometric — the word "semantic" doesn't appear in the paper | This is the Stage 3 geometric primitive we build on, not a competing approach |
-| AlphaAdj | Frame-by-frame VLM risk scoring, 2D, reactive, bottlenecked by per-frame API latency | This project pre-computes a 3D safety field asynchronously via hero frames instead |
+| AlphaAdj (Chen & Chandra, arXiv:2603.21142) | Scene-level VLM risk scalar from egocentric RGB, queried asynchronously at a fixed cadence (2 Hz), mapped onto the CBF's class-K gain; ~0.7s query latency managed via staleness-gated fusion and a speed-aware dynamic cap | Uses the *same lever* as `ALPHA_SCALE` (VLM risk modulating the class-K gain) — the real differences: per-object judgments vs. one scene-level scalar per view; persistent 3D map attribute vs. transient per-view estimate; offline hero-frame queries (zero online VLM latency) vs. online queries (latency-managed but paid every cycle) |
 | GS3LAM | Semantic SLAM — geometry + class labels, no safety/hazard scoring at all | This project's Stage 1 front end; the safety layer is added in Stage 2 |
 
 **The actual novel contribution:** a VLM-derived, per-object semantic safety scalar

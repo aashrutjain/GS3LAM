@@ -1026,3 +1026,43 @@ was "NOT executed as of this writing... cannot be constructed here," which is no
 stale — it just ran and passed. Left as-is since the instruction for this fix was
 scoped to `src/Decoder.py` and this file; flagging rather than editing a file outside
 that scope.
+
+## Stage 2 fail-safe default corrected + top-5 cap noted (2026-07-20)
+
+Two issues surfaced while documenting `vlm_safety_score.py` for the paper's Method
+section. Both trace to the original first-pass commit (`b243f0a`, 2026-04-20) and had
+survived every later commit untouched.
+
+**Fixed — inverted fail-safe default (safety-score-scale decision, flagged per
+CLAUDE.md Rules).** `vlm_safety_score.py`'s `__main__` wrapped `extract_canonical_view`
++ `query_vlm_safety` in a bare `except Exception` that set `safety_dictionary[obj_id] =
+1.0` ("Default to safe if it fails"). Because `broadcast_scores_and_save` initializes
+`safety_array = np.zeros(...)` and paints only queried objects, this produced an
+inverted fail-safe:
+
+- Unqueried splats defaulted to `0.0` (most conservative / "lethal") — the documented
+  convention, surfaced by `ply_io.py`'s `ambiguous_zero_mask` / `ZeroSafetyPolicy`.
+- A queried object whose call *failed* (projection error, API failure, or JSON parse
+  error) defaulted to `1.0` (most permissive / "completely safe") — telling the CBF to
+  drive over an object we had no valid judgment for.
+
+An object important enough to be audited defaulted, on failure, to the most permissive
+score, while an object never looked at defaulted to the most conservative one — the two
+"no valid score" paths pointed in opposite directions, and the dangerous one applied to
+exactly the objects the system had chosen to scrutinize. Changed the failure default
+from `1.0` to `0.0` so "no valid score" is uniformly conservative. `f_min` in
+`semantic_weighting.alpha_gain_per_splat` keeps the barrier active (not zeroed) at
+safety 0.0, so this is consistent with the existing zero-safety handling. Rationale
+recorded here rather than fixed silently, per CLAUDE.md's rule that safety-score-scale
+changes are research decisions. Secondary, not changed: the bare `except Exception`
+conflates geometry-projection failures with VLM/API failures; worth narrowing later,
+but it's orthogonal to the default-value inversion.
+
+**Noted, not changed — top-5 object cap is scaffolding.** The same `__main__` audits
+only the five largest object classes (`np.argsort(-counts)[:5]`, comment "Filtering
+noisy data..."). `git blame` confirms it is first-pass demo-driver code, lives only in
+`__main__` (every library function is per-object with no cap), and contradicts the
+"one query per object" method described in `ARCHITECTURE.md` §2.2 and the paper. Left
+in place for now — it's not a recorded scope decision, and the fix (drop the cap, or
+make it an explicit CLI arg) belongs with a real Stage 1/2 run, not this doc pass. The
+Method draft describes the intended per-object behavior and excludes the cap.
