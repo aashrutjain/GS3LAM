@@ -1067,6 +1067,54 @@ in place for now — it's not a recorded scope decision, and the fix (drop the c
 make it an explicit CLI arg) belongs with a real Stage 1/2 run, not this doc pass. The
 Method draft describes the intended per-object behavior and excludes the cap.
 
+## ARCHITECTURE.md §5: Gaussian World Model future-work bullet rewritten (2026-07-26)
+
+Written 2026-07-26, committed 2026-08-02 — it sat uncommitted in the working tree for a
+week and was held back from the 2026-07-20 doc commit pending a scope check, since
+`CLAUDE.md` treats `ARCHITECTURE.md` as the design source of truth and forbids pulling
+world-model components into current scope without being asked. Confirmed in scope as
+*future work only*: §5 is explicitly the "not current scope" section, and the entry
+states its own out-of-scope status. (Dating note: the working-tree copy under
+`research/GS3LAM/` — a partial snapshot taken 2026-07-20 14:46 — contains the λ/γ and
+AlphaAdj edits but *not* this one, which brackets the edit to after that snapshot; the
+file mtime put it at 2026-07-26 22:22.)
+
+**What it replaced.** A three-line bullet:
+
+> - **Predictive/anticipatory safety** — a Gaussian World Model that forecasts future
+>   scene states so the CBF can react before a hazard materializes, rather than scoring
+>   only the current frame. GPU/VRAM cost is currently prohibitive on target hardware.
+
+**What replaced it.** A ~17-line entry proposing a specific mechanism rather than a
+generic pointer: GWM (Lu et al., ICCV '25) already generates future Gaussian splats via
+a VAE plus an action-conditioned diffusion transformer, but purely geometrically with no
+notion of hazard. The proposal is to add a safety channel to that generative process —
+every `safety_gsplat.ply` this pipeline produces is already a (scene, VLM-judgment)
+pair, i.e. exactly the supervision needed to fine-tune a world model's generated splats
+to carry a predicted safety attribute. That is the same supervision pattern GS3LAM
+itself uses to train reconstructive splats against DEVA's 2D labels, applied one level
+up to a predictive model instead of a reconstructive one. The predicted,
+safety-annotated future splats would feed the existing collision-cone CBF unchanged,
+making the controller anticipatory rather than purely reactive.
+
+**Why the change.** Two things. The old bullet named a direction without saying how it
+would be built, which made it unactionable. And its stated blocker — "GPU/VRAM cost is
+currently prohibitive on target hardware" — was the wrong obstacle: the binding
+constraint on this direction is the compute and training data needed to fine-tune a
+generative model at GWM's scale, not inference VRAM on the A2000. The rewrite says that
+instead. No claim in it is validated; it is a recorded direction, not a result.
+
+**Caveat, flagged not fixed: the citation is unverified in this checkout.** "Lu et al.,
+ICCV '25", the VAE + diffusion-transformer architecture, and the action-conditioning
+claim were all transcribed into `ARCHITECTURE.md` without being checked against the
+actual paper here, and there is no offline copy in the repo to check against. This is
+worth naming explicitly because this repo has already been burned by exactly this
+failure mode once: the GS3LAM citation carried a fabricated author list ("Li, M., Liu,
+S., Zhou, H.") across multiple sessions before being corrected in `6301e28` (see the
+"Unrelated fix bundled into this same commit" note under the 2026-07-11 COV_INFLATE
+entry). Verify the GWM authors, venue, and architecture description against the real
+paper before any of this reaches the write-up.
+
 ## Pre-registered head-on scene: first real run, both backends (2026-08-02)
 
 `scenes/prereg_headon.py` recreated and executed. This is the first time a
@@ -1172,3 +1220,117 @@ reproduce exactly. Both backends do agree it fails to reach the goal, and both h
 same step ceiling. This is recorded, not chased; it is a divergence on a non-converging
 run, so it is the least trustworthy row in the table and should not be quoted without
 this caveat.
+
+## Constraint-activation trace at the NONE/ALPHA_SCALE divergence (2026-08-02)
+
+Follow-up to the pre-registered head-on run recorded above. Question under test, stated
+as a hypothesis to be refuted rather than confirmed: *at the steps where ALPHA_SCALE's
+severity is worst, is the hazard's own barrier the dominant active constraint, and does
+the required corrective magnitude there scale with k_alpha (smaller gain -> smaller
+required correction once h<0, not merely earlier activation while h>0)?*
+
+Scene `scenes/prereg_headon_seed42.ply` (seed 42), config `configs/cbf/room0_cbf.py`,
+`clarabel`. Trace driver was scratch and is not committed, per the ephemeral-driver
+convention; it imports the committed helpers rather than reimplementing them, and every
+number below was recomputed from the committed scene and config.
+
+Safety field as actually assembled: 301 splats, exactly one at safety 0.1 (the hazard,
+id 0, at `[0, 0.03, 0]`), 300 at 1.0. `k_alpha[hazard]` = 1.00000 under NONE, 0.10000
+under ALPHA_SCALE; background 1.0 in both. `A` and `s_min` are byte-identical between
+the two modes, as required for ALPHA_SCALE to be a pure gain change.
+
+### Result: the hypothesis is REFUTED in its specific form
+
+**At each mode's worst-severity step, the hazard barrier is not active at all.**
+
+```
+        NONE: hazard active steps 13..54 (42 steps); deactivates at step 55
+              last active step 54: sev=-0.1186 speed=0.8493 h=-94.17 delta=+3.19
+              deepest penetration step 55: dist=-0.1330 delta=-0.31 haz_active=False
+ ALPHA_SCALE: hazard active steps 13..49 (37 steps); deactivates at step 50
+              last active step 49: sev=-0.4164 speed=1.3692 h=-755.66 delta=+3.53
+              deepest penetration step 50: dist=-0.4251 delta=-3.80 haz_active=False
+```
+
+The gate is `cone_exists = (h <= 0) & (delta >= 0)`. `delta = r^T A v` flips negative as
+the robot passes the hazard, so the barrier releases *while the robot is still inside the
+inflated ellipsoid* (dist -0.12 / -0.42 at release). Worst penetration then occurs on the
+very next step, unconstrained. There is no dominant active constraint at the worst step to
+scale with anything: ALPHA_SCALE's active set at step 50 is empty.
+
+This is a property of the collision-cone formulation, not a bug: `h = beta*gamma - delta^2`
+is a cone condition on the velocity ray, not a stay-outside-the-ellipsoid condition.
+
+**Where the hazard IS dominant.** Over the active window it dominates overwhelmingly —
+ALPHA_SCALE 37/37 constrained steps (100%), NONE 30/43 (69.8%), the remainder going to
+collar splats 135/136. Dominant ids at the 20 worst-severity steps: `[0]` for
+ALPHA_SCALE, `[0, 135, 136]` for NONE.
+
+### The two sub-claims, tested separately
+
+**"Not just earlier activation" — CONFIRMED, and structurally guaranteed.** The gate
+contains no `k_alpha` term, and `A`/`s_min` are identical across modes, so the active set
+at a given state is mode-independent by construction. Empirically both modes first
+activate at step 13, from a bit-identical state.
+
+**"Smaller gain -> smaller required correction" — CONFIRMED at a matched state, but
+weakly and with a floor.** Trajectories are identical through step 13, so that state is a
+clean matched-state comparison where `k_alpha` is the only variable:
+
+```
+        mode            h   k_haz  rhs=-k*h/2  |u_s-u_ref|                       u_safe
+        NONE   -1039.0605   1.000    519.5303     1.276847    [-0.2304 -0.3411  0.    ]
+ ALPHA_SCALE   -1039.0605   0.100     51.9530     0.994977    [ 0.0412 -0.2658  0.    ]
+```
+
+Sweeping only the hazard's gain at that same state (n_active=1, active id `[0]`,
+h=-1039.0605):
+
+```
+    k_haz      rhs_haz  |u_safe-u_ref|  ratio_vs_k1   slack_haz
+        1     519.5303        1.276847       1.0000    0.00e+00
+      0.5     259.7651        1.120253       0.8774    0.00e+00
+      0.2     103.9061        1.026296       0.8038    0.00e+00
+      0.1      51.9530        0.994977       0.7792    3.81e-06
+     0.05      25.9765        0.979318       0.7670   -5.72e-06
+     0.02      10.3906        0.969922       0.7596    4.77e-06
+     0.01       5.1953        0.966790       0.7572    2.38e-06
+    0.001       0.5195        0.963972       0.7550    9.54e-07
+```
+
+`rhs` is exactly proportional to `k_alpha`, but the correction is strongly sublinear: a
+1000x gain reduction buys only a 24.5% correction reduction. The floor is explained
+exactly — as `k_alpha -> 0` the constraint tends to `w^T u >= 0`, and the distance from
+`u_ref = [1,0,0]` to that halfspace is `-w.u_ref/||w|| = 0.963659`, against a measured
+0.963972 at k=1e-3. `k_alpha` scales the constraint *offset*; it cannot rotate the
+constraint *direction*, which is what sets the floor.
+
+### What the approach phase actually looks like
+
+```
+ step | NONE speed   NONE dh  NONE rhs NONE act | ALPHA speed  ALPHA dh ALPHA rhs ALPHA act
+   15 |     0.6503   17.1158    438.21     True |      0.6676   17.0999     49.66      True
+   25 |     1.0916   12.7745    228.53     True |      1.0968   12.6961     43.15      True
+   35 |     1.3739    6.6883    123.23     True |      1.4689    6.4499     40.48      True
+   45 |     1.0666    1.7151     74.27     True |      1.4771    0.4734     38.47      True
+   50 |     0.9398    0.3197     57.66     True |      1.3544   -0.4251     37.80     False
+   55 |     0.8280   -0.1330     44.76    False |      1.2814    0.5948     22.54     False
+```
+
+(`dh` = signed distance to the hazard's inflated surface.) NONE begins shedding speed
+around step 35 and arrives at the surface at 0.85 m/s; ALPHA_SCALE keeps accelerating to
+~1.53 and arrives at 1.37 m/s. Essentially the entire severity gap is already present at
+the moment the barrier releases (-0.1186 vs -0.4164, against final -0.1330 vs -0.4251),
+so it accrues across the active window, not at any single binding step.
+
+### Status
+
+The specific hypothesis is refuted: there is no dominant active constraint at the
+worst-severity steps to carry the mechanism. A plausible replacement account —
+cumulative under-braking across a 37-step window, each step's correction reduced ~22% —
+is *consistent* with the data but **not established**: nothing here demonstrates that
+the per-step reduction integrates to the observed -0.29 gap, and no counterfactual
+(e.g. replaying NONE's control sequence under ALPHA_SCALE's gains, or sweeping
+`k_alpha` end-to-end and checking severity monotonicity) has been run. Recorded as open.
+`ARCHITECTURE.md` states the numbers and flags the mechanism as unsettled; no mechanism
+has been written into it.

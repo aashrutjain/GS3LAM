@@ -98,7 +98,36 @@ exists at `src/cbf/`, with both weighting strategies above implemented as swappa
 against a synthetic scene (no real Stage 1/2 output exists in this checkout yet) — the
 collision-cone math was confirmed to match an independent hand calculation, and a real
 dtype bug in the QP solver path was found and fixed in the process (see `PROGRESS.md`).
-`ALPHA_SCALE` vs `NONE` behaved exactly as predicted (same path, slower approach);
+`ALPHA_SCALE` vs `NONE` was previously characterized here as behaving "exactly as
+predicted (same path, slower approach)". **The real, committed numbers contradict that
+and supersede it.** On the pre-registered head-on scene (`scenes/prereg_headon.py`,
+seed 42, committed in `8caa5ba`; full console output in `PROGRESS.md`, "Pre-registered
+head-on scene: first real run, both backends", 2026-08-02) the two modes take the same
+path — `path_length_ratio` 0.9999 (`ALPHA_SCALE`) vs 1.0003 (`NONE`), i.e. neither
+departs laterally — but `ALPHA_SCALE` completes **faster**, `time_ratio` 1.0597 vs
+1.1418, and with **worse** collision severity, -0.4251 vs -0.1330 (shared
+true-geometry signed distance, Mahalanobis units; more negative = deeper into the true
+confidence ellipsoid). Faster and deeper is the opposite of "slower approach", and the
+opposite of §2.3's design intent that a lower safety score should produce *more*
+conservative braking. Both backends reproduce it identically (|Δtime_ratio| = 0.00e+00,
+|Δpath_length_ratio| ≤ 9.54e-08), so it is not a solver artifact. The superseded
+characterization came from a synthetic smoke-test scene that was never persisted and
+cannot be re-checked; the committed pre-registered run is the current source of truth.
+The mechanism is **not settled**. A per-step constraint trace was run on 2026-08-02
+(`PROGRESS.md`, "Constraint-activation trace at the NONE/ALPHA_SCALE divergence") and
+it *refutes* the obvious candidate explanation rather than confirming it: at each
+mode's worst-severity step the hazard's barrier is **inactive** — for `ALPHA_SCALE` the
+active set is empty at that step — because the collision-cone gate
+`cone_exists = (h <= 0) & (delta >= 0)` releases as soon as the robot stops approaching
+in the `A`-metric, while it is still well inside the inflated ellipsoid. Two things the
+trace does establish: (i) `ALPHA_SCALE` cannot change *when* a constraint activates —
+the gate contains no `k_alpha` term and `A`/`s_min` are byte-identical between the two
+modes, and both activate on the same step from the same state; (ii) at a matched state
+the smaller gain does reduce the required correction, but weakly — a 10× smaller
+`k_alpha` cuts `||u_safe − u_ref||` by only ~22%, saturating at a floor set by the
+constraint *direction* alone, which `k_alpha` cannot touch. Whether that per-step
+reduction, accumulated over the active window, fully accounts for the −0.29 severity
+gap is **not** established. Do not write a settled mechanism into this file until it is.
 `COV_INFLATE`'s slow-convergence behavior in that synthetic scene was disambiguated on
 2026-07-11 as a fixed-gain (`k_alpha_base`) artifact, not a legitimate no-safe-corridor
 refusal — see `PROGRESS.md`. That conclusion still holds under the Clarabel backend, but
@@ -230,9 +259,23 @@ these unless asked directly — logged here so future sessions don't wander into
 - **Dynamic-scene SLAM backbone migration** — replacing GS3LAM with something that
   natively tracks per-object dynamic probability (e.g., DL-SLAM), so the map stops
   assuming a static environment.
-- **Predictive/anticipatory safety** — a Gaussian World Model that forecasts future
-  scene states so the CBF can react before a hazard materializes, rather than scoring
-  only the current frame. GPU/VRAM cost is currently prohibitive on target hardware.
+- **Predictive/anticipatory safety via a distilled Gaussian World Model** — GWM (Lu et
+  al., ICCV '25) already generates future Gaussian splats through a VAE and diffusion
+  transformer conditioned on robot action, but purely geometrically, with no notion of
+  hazard. A natural extension is adding a safety channel to that generative process:
+  every `safety_gsplat.ply` this pipeline already produces is a (scene, VLM-judgment)
+  pair, exactly the training signal needed to fine-tune a world model's generated splats
+  to carry a predicted safety attribute, the same supervision pattern GS3LAM itself uses
+  to train reconstructive splats against DEVA's 2D labels, applied one level up to a
+  predictive model instead of a reconstructive one. The resulting predicted,
+  safety-annotated future splats would feed directly into the existing collision-cone
+  CBF unchanged, letting the controller react to a hazard's predicted future state
+  rather than only its currently-mapped one, genuine anticipatory safety rather than
+  purely reactive. This is a substantially larger undertaking than the current pipeline,
+  fine-tuning a generative model at GWM's scale requires materially more compute and
+  training data than the hero-frame VLM-query approach, and is out of scope for this
+  paper; it is recorded here as a specific, concrete direction rather than a general
+  pointer toward predictive representations.
 
 ## 6. Key references
 
