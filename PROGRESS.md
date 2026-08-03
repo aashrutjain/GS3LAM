@@ -1179,9 +1179,19 @@ the two are graded against the same boundary.
 This is the counterintuitive faster-but-worse-severity pattern, now reproduced on a
 real, persisted, pre-registered scene rather than recalled from an unpersisted run.
 Note it is *not* what the Step 0 narrow-corridor table (2026-07-11) showed: there,
-`ALPHA_SCALE` and `NONE` had an identical time_ratio of 1.06 with the same severity
-gap. Here the severity gap is the same (-0.425 vs -0.133) but the time ratios have
-separated, with `ALPHA_SCALE` the faster of the two.
+`ALPHA_SCALE` and `NONE` had an identical time_ratio of 1.06. What carries over from
+that table is `ALPHA_SCALE`'s severity alone (-0.425 there, -0.4251 here); the severity
+*gap* does not -- Step 0's `NONE` severity was -0.064, giving a gap of 0.361 there
+against 0.292 here. The time ratios, identical at Step 0, have separated here, with
+`ALPHA_SCALE` the faster of the two.
+
+> **Correction (2026-08-03) — this was an error in the original entry.** This paragraph
+> first read "Here the severity gap is the same (-0.425 vs -0.133)". The two scenes'
+> severity gaps are not the same, and -0.133 is *this* scene's own `NONE` severity, not
+> Step 0's. Step 0's `NONE` severity was -0.064 (table at the `COV_INFLATE`
+> disambiguation Step 0). Gaps: 0.361 at Step 0, 0.292 here. Only `ALPHA_SCALE`'s
+> severity coincides across the two scenes; the equal-gap claim was wrong and the
+> sentence above replaces it. No other number in this entry is affected.
 
 **Bearing on `ARCHITECTURE.md:101.** That line currently reads "`ALPHA_SCALE` vs `NONE`
 behaved exactly as predicted (same path, slower approach)". Against this run: "same
