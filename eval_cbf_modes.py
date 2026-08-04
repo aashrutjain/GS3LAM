@@ -218,7 +218,7 @@ def main():
     parser.add_argument("--hazard-radius", type=float, default=0.5, help="Phase A hazard radius (m)")
     parser.add_argument("--hazard-safety", type=float, default=0.1, help="Phase A hazard safety score")
     parser.add_argument("--cov-gamma", type=float, default=1.0, help="cov_inflate_gamma for COV_INFLATE")
-    parser.add_argument("--near-miss-thresh", type=float, default=0.3, help="meters, for near_miss_events")
+    parser.add_argument("--near-miss-thresh", type=float, default=0.3, help="Mahalanobis units, for near_miss_events")
     args = parser.parse_args()
 
     cfg_dict = load_config(args.config)

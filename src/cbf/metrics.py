@@ -51,8 +51,8 @@ def path_efficiency(
     oracle_time: float,
 ) -> dict:
     """path_length_ratio: actual arc length / straight-line start-goal distance.
-    time_ratio: actual time-to-goal / oracle time-to-goal (CBF disabled, same
-    controller, obstacle-free copy of the scene).
+    time_ratio: actual time-to-goal / oracle time-to-goal (oracle is the same
+    scene with the CBF disabled via PassthroughFilter, same controller).
     """
     diffs = np.diff(trajectory_p, axis=0)
     arc_length = float(np.sum(np.linalg.norm(diffs, axis=-1)))

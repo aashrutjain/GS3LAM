@@ -15,13 +15,13 @@ regenerated deterministically (fixed seed) in any future session, and so the
 (--collar-radius) rather than two independently hand-edited files.
 
 Geometry: straight-line path along +x from start=(-2.5,0,0) to goal=(2.5,0,0).
-One hazard splat at the origin. A double-ring "collar" of small clutter splats
+One hazard splat at the origin. A five-ring "collar" of small clutter splats
 encircling the corridor around the hazard (not just flanking in +/-y) so a
 robot must detour in BOTH y and z to go around the hazard -- a single flanking
 pair in y alone leaves z open as an unconstrained escape route, which would
 silently defeat the corridor-width manipulation this scene exists to support.
-300 background splats (240 far-field 'bulk' + 60 collar) + 1 hazard splat =
-301 total, isotropic scale, identity quaternion (unnormalized-on-disk
+300 background splats (150 far-field 'bulk' + 150 collar, 5 rings x 30) + 1
+hazard splat = 301 total, isotropic scale, identity quaternion (unnormalized-on-disk
 convention per ply_io.py, stored here as the already-unit (1,0,0,0)).
 
 All physical-radius math below follows collision_cone.py's actual formula
