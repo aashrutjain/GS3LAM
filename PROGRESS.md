@@ -1339,8 +1339,323 @@ The specific hypothesis is refuted: there is no dominant active constraint at th
 worst-severity steps to carry the mechanism. A plausible replacement account —
 cumulative under-braking across a 37-step window, each step's correction reduced ~22% —
 is *consistent* with the data but **not established**: nothing here demonstrates that
-the per-step reduction integrates to the observed -0.29 gap, and no counterfactual
+the per-step reduction integrates to the observed -0.29 gap, and ~~no counterfactual
 (e.g. replaying NONE's control sequence under ALPHA_SCALE's gains, or sweeping
-`k_alpha` end-to-end and checking severity monotonicity) has been run. Recorded as open.
+`k_alpha` end-to-end and checking severity monotonicity) has been run. Recorded as open.~~
+**Partly done (2026-08-31) — see "Does the per-step correction reduction explain the
+ALPHA_SCALE/NONE severity gap?" below.** The `k_alpha` end-to-end sweep was run (severity
+is smooth and monotonic in gain, no threshold), and the matched-state re-solve was extended
+across the whole window. Short answer: the per-step reduction is real but **not** the stable
+~22% assumed here (it ranges 2.19%-30.29% / 5.41%-89.82%), and 83% of the severity gap
+occurs at constant approach speed, so accumulated under-braking is not a sufficient
+explanation. Replaying NONE's control *sequence* under ALPHA_SCALE's gains is still not run.
 `ARCHITECTURE.md` states the numbers and flags the mechanism as unsettled; no mechanism
 has been written into it.
+
+## Does the per-step correction reduction explain the ALPHA_SCALE/NONE severity gap? (2026-08-31)
+
+Follow-up to "Constraint-activation trace at the NONE/ALPHA_SCALE divergence" above,
+testing the replacement account that section left open: *is a per-step corrective-magnitude
+reduction, accumulated across the active window, a sufficient explanation for the 0.292
+severity gap?* Two experiments — a per-step matched-state re-solve across the whole window
+(A), and an end-to-end gain sweep between the two modes' effective gains (B). These are the
+two counterfactuals `### Status` above named as unrun. No library math was touched:
+`collision_cone.py`, `qp_filter.py` and `ellipsoid.py` are unchanged, as is
+`scenes/prereg_headon_seed42.ply` (checksum-verified before and after).
+
+**Departure from the ephemeral-driver convention, deliberately.** Both drivers are
+committed, as `scripts/exp_a_matched_state_window.py` and `scripts/exp_b_gain_sweep.py`,
+rather than discarded as scratch. The reason is directly above: the 2026-08-02 trace driver
+and the earlier state-by-state re-solve driver were both discarded, and their numbers now
+survive only as prose — which is exactly why the 30/43 figure corrected below could not be
+re-checked without rewriting the driver from scratch. Scene generation stays ephemeral;
+measurement drivers that produce recorded numbers no longer do.
+
+Env: system Python 3.10.12, `numpy 2.2.6`, `scipy 1.15.2`, `clarabel 0.11.1`. Scene
+`scenes/prereg_headon_seed42.ply` (seed 42), config `configs/cbf/room0_cbf.py`,
+`clarabel` throughout. `k_alpha_base=1.0` and `alpha_f` is identity, so under
+`ALPHA_SCALE` the hazard's effective gain *is* its safety value: 0.1 vs NONE's 1.0.
+
+### Harness cross-checks (both pass, exactly)
+
+Step 13 reproduces the committed matched-state numbers to all printed digits, and both
+activation windows reproduce exactly:
+
+```
+  states identical at step 13: True
+  |u-uref| NONE=1.276847 [1.276847]  ALPHA_SCALE=0.994977 [0.994977]  ratio=0.7792 [0.7792]
+  CROSS-CHECK PASS
+
+        NONE: hazard active steps 13..54 (42 steps); deactivates at step 55
+ ALPHA_SCALE: hazard active steps 13..49 (37 steps); deactivates at step 50
+```
+
+Experiment B's endpoints reproduce the committed 2026-08-02 rollout table exactly —
+`ALPHA_SCALE` at gain 1.00 is bit-identical to the `NONE` row, as it must be since every
+gain then equals `k_alpha_base`:
+
+```
+  gain 1.00 vs         NONE: severity -0.1330 [-0.133] time_ratio 1.1418 [1.1418] plen 1.0003 [1.0003]  -> PASS
+  gain 0.10 vs  ALPHA_SCALE: severity -0.4251 [-0.4251] time_ratio 1.0597 [1.0597] plen 0.9999 [0.9999]  -> PASS
+  ALPHA_SCALE@1.0 identical to NONE row: True
+```
+
+### Experiment A — the per-step reduction is NOT stable across the window
+
+For every step from 13 through each mode's deactivation, at that mode's own recorded
+`(p, v)`, the QP was re-solved with the other mode's gain. Nothing is forward-integrated.
+Ratio is always (low-gain correction)/(high-gain correction), so it is comparable across
+both families.
+
+At **NONE's** recorded states (re-solved under ALPHA_SCALE's gain):
+
+```
+ step    speed  dist_haz        min_h  nact  haz  |u_own-uref|  |u_oth-uref|    ratio   reduc%
+   13   0.6500   17.7588   -1039.0605     1 True      1.276847      0.994977   0.7792    22.08
+   14   0.6387   17.4397    -973.4023     1 True      1.028206      0.809295   0.7871    21.29
+   15   0.6503   17.1158    -876.4141     1 True      0.659388      0.534116   0.8100    19.00
+   16   0.6863   16.7754    -799.8535     1 True      0.515414      0.431122   0.8365    16.35
+   17   0.7289   16.4152    -741.8066     1 True      0.459611      0.394721   0.8588    14.12
+   18   0.7734   16.0342    -692.9336     1 True      0.434733      0.381523   0.8776    12.24
+   19   0.8188   15.6319    -649.8418     1 True      0.424761      0.379519   0.8935    10.65
+   20   0.8646   15.2083    -610.9316     1 True      0.423623      0.384229   0.9070     9.30
+   21   0.9104   14.7634    -575.3262     1 True      0.428578      0.393682   0.9186     8.14
+   22   0.9561   14.2972    -542.4805     1 True      0.438276      0.406949   0.9285     7.15
+   23   1.0016   13.8102    -511.9922     1 True      0.452041      0.423613   0.9371     6.29
+   24   1.0468   13.3025    -483.5938     1 True      0.469580      0.443545   0.9446     5.54
+   25   1.0916   12.7745    -457.0508     1 True      0.490826      0.466785   0.9510     4.90
+   26   1.1357   12.2269    -432.1875     1 True      0.515853      0.493490   0.9566     4.34
+   27   1.1792   11.6601    -408.8750     1 True      0.544832      0.523884   0.9616     3.84
+   28   1.2218   11.0751    -386.9727     1 True      0.577958      0.558202   0.9658     3.42
+   29   1.2633   10.4726    -366.3828     1 True      0.615394      0.596637   0.9695     3.05
+   30   1.3034    9.8540    -347.0039     2 True      1.230802      0.892114   0.7248    27.52
+   31   1.3043    9.2383    -305.1035     1 True      0.677808      0.661367   0.9757     2.43
+   32   1.3419    8.6088    -289.0840     1 True      0.724967      0.709081   0.9781     2.19
+   33   1.3772    7.9673    -685.2500     2 True      0.787793      0.764612   0.9706     2.94
+   34   1.4091    7.3167    -600.7500     3 True      1.533629      1.069123   0.6971    30.29
+   35   1.3739    6.6883    -570.7500     3 True      1.518980      1.066848   0.7023    29.77
+   36   1.3396    6.0824    -542.5000     3 True      1.504763      1.064633   0.7075    29.25
+   37   1.3061    5.4990    -515.8750     3 True      1.490905      1.062443   0.7126    28.74
+   38   1.2734    4.9387    -490.0000     3 True      1.477453      1.060287   0.7176    28.24
+   39   1.2416    4.4018    -465.8750     3 True      1.464377      1.058172   0.7226    27.74
+   40   1.2105    3.8888    -443.3125     3 True      1.451677      1.056087   0.7275    27.25
+   41   1.1803    3.4006    -421.1875     3 True      1.439312      1.054014   0.7323    26.77
+   42   1.1508    2.9379    -400.3125     3 True      1.427296      1.051963   0.7370    26.30
+   43   1.1220    2.5019    -380.6250     3 True      1.415623      1.049936   0.7417    25.83
+   44   1.0939    2.0939    -361.8125     3 True      1.404271      1.047919   0.7462    25.38
+   45   1.0666    1.7151    -344.0938     3 True      1.393238      1.045915   0.7507    24.93
+   46   1.0399    1.3673    -326.9062     3 True      1.382508      1.043909   0.7551    24.49
+   47   1.0139    1.0522    -310.9062     3 True      1.372082      1.041906   0.7594    24.06
+   48   0.9886    0.7714    -295.5312     3 True      1.361944      1.039894   0.7635    23.65
+   49   0.9639    0.5267    -280.9375     3 True      1.352090      1.037866   0.7676    23.24
+   50   0.9398    0.3197    -267.0938     3 True      1.342512      1.035816   0.7716    22.84
+   51   0.9163    0.1513    -253.8594     3 True      1.333199      1.033731   0.7754    22.46
+   52   0.8934    0.0223    -241.3594     3 True      1.324148      1.031601   0.7791    22.09
+   53   0.8710   -0.0673    -229.4062     3 True      1.315348      1.029411   0.7826    21.74
+   54   0.8493   -0.1186    -218.0781     3 True      1.306795      1.027145   0.7860    21.40
+  n=42  reduction%: mean=17.70 median=21.91 min=2.19 max=30.29
+  ratio: first(step 13)=0.7792  last(step 54)=0.7860  std=0.0960
+```
+
+At **ALPHA_SCALE's** recorded states (re-solved under NONE's gain):
+
+```
+ step    speed  dist_haz        min_h  nact  haz  |u_own-uref|  |u_oth-uref|    ratio   reduc%
+   13   0.6500   17.7588   -1039.0605     1 True      0.994977      1.276847   0.7792    22.08
+   14   0.6522   17.4329   -1025.1582     1 True      0.858499      1.097943   0.7819    21.81
+   15   0.6676   17.0999    -993.2617     1 True      0.629401      0.793869   0.7928    20.72
+   16   0.7005   16.7515    -962.5371     1 True      0.501103      0.618994   0.8095    19.05
+   17   0.7410   16.3840    -941.6113     1 True      0.447145      0.541519   0.8257    17.43
+   18   0.7841   15.9962    -926.0391     1 True      0.423460      0.503928   0.8403    15.97
+   19   0.8283   15.5875    -913.4590     1 True      0.414588      0.485827   0.8534    14.66
+   20   0.8732   15.1578    -902.7715     1 True      0.414458      0.479122   0.8650    13.50
+   21   0.9182   14.7069    -893.3516     1 True      0.420320      0.480086   0.8755    12.45
+   22   0.9632   14.2351    -884.8574     1 True      0.430833      0.486849   0.8849    11.51
+   23   1.0081   13.7425    -877.0625     1 True      0.445343      0.498444   0.8935    10.65
+   24   1.0526   13.2293    -869.8125     1 True      0.463575      0.514400   0.9012     9.88
+   25   1.0968   12.6961    -863.0156     1 True      0.485485      0.534547   0.9082     9.18
+   26   1.1404   12.1432    -856.5820     1 True      0.511170      0.558899   0.9146     8.54
+   27   1.1834   11.5713    -850.4727     1 True      0.540819      0.587590   0.9204     7.96
+   28   1.2254   10.9811    -844.6289     1 True      0.574651      0.620803   0.9257     7.43
+   29   1.2664   10.3736    -839.0391     1 True      0.612843      0.658700   0.9304     6.96
+   30   1.3059    9.7499    -833.6582     1 True      0.655424      0.701305   0.9346     6.54
+   31   1.3438    9.1115    -828.4941     1 True      0.702123      0.748359   0.9382     6.18
+   32   1.3795    8.4599    -823.5156     1 True      0.752167      0.799110   0.9413     5.87
+   33   1.4126    7.7974    -818.7227     1 True      0.804066      0.852109   0.9436     5.64
+   34   1.4426    7.1263    -814.0996     1 True      0.855487      0.905078   0.9452     5.48
+   35   1.4689    6.4499    -809.6348     1 True      0.903376      0.955043   0.9459     5.41
+   36   1.4908    5.7715    -805.3066     1 True      0.944454      0.998827   0.9456     5.44
+   37   1.5080    5.0953    -801.1055     1 True      0.976025      1.033874   0.9440     5.60
+   38   1.5202    4.4261    -797.0059     1 True      0.981586      1.043868   0.9403     5.97
+   39   1.5271    3.7690    -792.9854     1 True      0.976395      1.044324   0.9350     6.50
+   40   1.5292    3.1299    -789.0107     1 True      0.969955      1.045099   0.9281     7.19
+   41   1.5267    2.5154    -785.0679     1 True      0.961740      1.046192   0.9193     8.07
+   42   1.5201    1.9331    -781.1470     1 True      0.950943      1.047614   0.9077     9.23
+   43   1.5095    1.3916    -777.2295     1 True      0.936234      1.049355   0.8922    10.78
+   44   1.4952    0.9013    -773.3123     1 True      0.915233      1.051274   0.8706    12.94
+   45   1.4771    0.4734    -769.3899     1 True      0.883240      1.052710   0.8390    16.10
+   46   1.4553    0.1197    -765.4684     1 True      0.829805      1.050932   0.7896    21.04
+   47   1.4294   -0.1491    -761.5934     1 True      0.728422      1.034354   0.7042    29.58
+   48   1.3995   -0.3270    -757.9868     1 True      0.508319      0.952470   0.5337    46.63
+   49   1.3692   -0.4164    -755.6561     1 True      0.068517      0.672817   0.1018    89.82
+  n=37  reduction%: mean=14.59 median=9.88 min=5.41 max=89.82
+  ratio: first(step 13)=0.7792  last(step 49)=0.1018  std=0.1498
+```
+
+**The ~22% at step 13 is not representative of the window.** It is close to the endpoints
+of the NONE family (22.08% at step 13, 21.40% at step 54) but that is a coincidence of
+where the window starts and stops, not a plateau: in between the reduction collapses to
+**2.19%** (step 32) and rises to **30.29%** (step 34). The mean over the NONE family is
+17.70%, over the ALPHA_SCALE family 14.59%. Neither family is flat, and the two do not
+even have the same shape — the ALPHA_SCALE family decays to ~5.4% mid-window and then
+runs away to **89.82%** at step 49, the last step before release.
+
+**The discontinuities are active-set composition changes, not gain effects.** The jumps at
+NONE's steps 30/33/34 line up exactly with `nact` going 1 -> 2 -> 3. Recording the active
+sets over each rollout:
+
+```
+        NONE: constrained=43 hazard_active=42
+              active-set compositions: (0,135,136) x21, (0,) x19, (0,136) x2, (135,136) x1
+ ALPHA_SCALE: constrained=37 hazard_active=37
+              active-set compositions: (0,) x37
+```
+
+NONE recruits the collar splats 135/136 on 23 of its 43 constrained steps; ALPHA_SCALE's
+active set is the bare hazard `(0,)` on all 37. That is a structural difference in *which
+constraints exist*, reached by trajectory divergence — not something a gain multiplier
+does directly, and not visible in a single matched-state check.
+
+> **Correction (2026-08-31) — one figure in the 2026-08-02 trace above does not reproduce.**
+> That section reports hazard dominance as "NONE 30/43 (69.8%)". Re-measured here two
+> independent ways — `argmin(h)` over the active set, and comparing the hazard's own `h`
+> against the filter's reported `min_h` — it is **20/43 (46.5%)**. Both methods agree, and
+> there is no opacity pruning on this scene (301 splats loaded, 301 after pruning), so the
+> original-index mapping in `active_splat_ids` is exact. ALPHA_SCALE's 37/37 (100%)
+> reproduces exactly. The original driver was not committed, so the original figure's exact
+> definition cannot be recovered to determine whether this is a genuine error or a different
+> definition of "dominant"; recorded as a discrepancy rather than asserted as a bug. The
+> numbers in that section are left unedited. This is the concrete reason the drivers for
+> *this* section are committed.
+
+### Experiment B — end-to-end gain sweep, five intermediate gains
+
+Full rollout at each hazard gain, same scene/start/goal/solver, one shared oracle
+(`oracle_time=6.7000s`) and the shared true-geometry grading filter. `collar_steps` counts
+steps whose active set contains a non-hazard splat; `haz_window` is the hazard-active
+window.
+
+```
+        mode   k_haz  reached   severity  time_ratio  plen_ratio  near_miss  infeas   haz_window  collar_steps
+        NONE    1.00     True    -0.1330      1.1418      1.0003          1       0  13..54 (42)            24
+ ALPHA_SCALE    0.10     True    -0.4251      1.0597      0.9999          1       0  13..49 (37)             0
+ ALPHA_SCALE    0.20     True    -0.3424      1.0597      1.0008          1       0  13..49 (37)             0
+ ALPHA_SCALE    0.35     True    -0.2561      1.0597      1.0014          1       0  13..49 (37)             8
+ ALPHA_SCALE    0.50     True    -0.1836      1.0672      1.0033          1       0  13..49 (37)            13
+ ALPHA_SCALE    0.70     True    -0.1529      1.0821      1.0017          1       0  13..50 (38)            17
+ ALPHA_SCALE    0.85     True    -0.1398      1.1045      1.0005          1       0  13..52 (40)            20
+ ALPHA_SCALE    1.00     True    -0.1330      1.1418      1.0003          1       0  13..54 (42)            24
+```
+
+Monotonicity, gain increasing 0.1 -> 1.0:
+
+| quantity | values | verdict |
+|---|---|---|
+| `collision_severity` | -0.4251, -0.3424, -0.2561, -0.1836, -0.1529, -0.1398, -0.1330 | **monotonic increasing** (strongly saturating) |
+| `time_ratio` | 1.0597, 1.0597, 1.0597, 1.0672, 1.0821, 1.1045, 1.1418 | monotonic increasing, **flat over 0.1-0.35** |
+| `path_length_ratio` | 0.9999, 1.0008, 1.0014, 1.0033, 1.0017, 1.0005, 1.0003 | non-monotonic, peak at 0.5 — but total spread 3.4e-3, negligible |
+
+Step-to-step severity deltas: `+0.0827, +0.0863, +0.0725, +0.0307, +0.0132, +0.0067`.
+
+So, unlike the earlier `COV_INFLATE` `k_alpha_base` sweep, there is **no threshold and no
+non-monotonicity of consequence** here: no infeasibility at any gain (`infeas=0`
+throughout), every run reaches the goal, and severity moves smoothly. "Lower gain -> faster
+and worse severity" is a real, smooth, monotonic property of the gain on this scene. It is
+however far from linear: the first 40% of the gain range carries 83% of the severity
+change.
+
+### The mechanism is not what the accumulated-under-braking account assumed
+
+Because the deepest penetration occurs on the step *after* the barrier releases, severity is
+essentially set by the state at release. Measuring that state across the sweep:
+
+```
+  k_haz  rel_step  speed@rel  depth@rel   severity  max_speed     p@rel x    p@rel y   maxdev_y
+   0.10        49     1.3692    -0.4164    -0.4251     1.5292    -0.10249   -0.41349    0.44353
+   0.20        49     1.3707    -0.3424    -0.3424     1.5310    -0.10277   -0.42103    0.45466
+   0.35        49     1.3626    -0.2557    -0.2561     1.5304    -0.11300   -0.42743    0.46647
+   0.50        49     1.3766    -0.1836    -0.1836     1.5071    -0.11859   -0.43238    0.47702
+   0.70        50     1.2073    -0.1475    -0.1529     1.4950    -0.18987   -0.41945    0.47371
+   0.85        52     1.0342    -0.1398    -0.1398     1.4622    -0.26234   -0.40492    0.46512
+   1.00        54     0.8493    -0.1186    -0.1330     1.4091    -0.35903   -0.38459    0.46144
+```
+
+(hazard mean is `[0, 0.03, 0]`; `p@rel` is the position at step 49 for every row, so the
+columns are directly comparable.)
+
+**Over gains 0.10-0.50 the approach speed is flat and the severity still nearly halves.**
+Release happens at step 49 in all four cases, at speed 1.3692 / 1.3707 / 1.3626 / 1.3766
+and peak speed 1.5292 / 1.5310 / 1.5304 / 1.5071 — differences of order 1e-2 — while
+severity goes -0.4251 -> -0.1836. That is **0.2415 of the total 0.292 gap, i.e. 83%,
+traversed with no meaningful change in how fast the robot is going.** A cumulative
+*under-braking* story predicts the opposite: lower gain -> less speed shed -> faster at the
+surface -> deeper. The speed column does not move.
+
+What does move is **lateral** displacement: `p@rel y` goes -0.41349 -> -0.43238 and peak
+lateral deviation 0.44353 -> 0.47702 as gain rises over that range. The robot is pushed
+further off the axis, so at the same step and the same speed it is shallower inside the
+ellipsoid. Only from gain 0.70 upward does the longitudinal channel engage — release slips
+to step 50/52/54, `p@rel x` falls back from -0.119 to -0.359, and speed at release drops to
+1.2073 / 1.0342 / 0.8493. The `time_ratio` column shows the same split: dead flat at 1.0597
+across 0.1-0.35, rising only above 0.5.
+
+**Noted, not changed —** this sits awkwardly against `ARCHITECTURE.md` §2.3's description
+of `ALPHA_SCALE` as affecting "longitudinal approach speed only; doesn't change lateral
+routing around an object". The ellipsoid geometry is indeed untouched by `ALPHA_SCALE`, so
+that statement is right about the mechanism it describes; but the constraint normal
+`w = gamma*Av - delta*Ar` has a lateral component, so scaling the constraint offset does
+change the realized lateral displacement, and on this scene that is the dominant channel
+over most of the gain range. Whether to reword §2.3 is a research call about a recorded
+finding, not a coding call, so it is flagged here rather than applied.
+
+### Verdict
+
+**Something else contributes meaningfully beyond simple accumulation.** Stated precisely,
+because two distinct claims are at stake:
+
+- *Is there a per-step correction reduction that accumulates?* Yes — it is real at every
+  step of both windows, and it is never adverse.
+- *Is it the stable ~22%-per-step effect the open account assumed?* **No.** It ranges
+  2.19%-30.29% (NONE family) and 5.41%-89.82% (ALPHA_SCALE family), with the largest
+  discontinuities driven by active-set composition changes rather than by the gain. The
+  ~22% at step 13 is not a plateau; it is a coincidence of the window's endpoints.
+- *Does accumulated braking account for the gap?* **No, not for most of it.** 83% of the
+  0.292 gap occurs over a gain range where speed at release is constant to ~1%. The
+  accumulated quantity that actually tracks severity there is lateral displacement, not
+  shed speed.
+
+The approximate sufficiency check makes the same point quantitatively. Summing the
+per-step correction differences over the window and multiplying by `dt` gives an implied
+speed difference of **0.4569 m/s** at NONE's states but **0.2175 m/s** at ALPHA_SCALE's
+states, against an actual difference of **0.5200 m/s** at the last hazard-active step. A
+genuine stable per-step effect would give consistent answers from either family; a
+factor-of-two disagreement between them is the signature of the path dependence.
+(This check is an upper bound in one direction — correction magnitudes are not all aligned
+with the direction of travel — and by construction ignores the trajectory divergence it is
+testing for. It is reported as corroboration, not as a measurement.)
+
+**What is now established.** The gain dependence is real, smooth and monotonic in severity,
+with no threshold or infeasibility anywhere in `[0.1, 1.0]` — that much of the informal
+account survives, and Experiment B's endpoints reproduce the committed rollout exactly.
+The per-step reduction is real but not stable, and its accumulation is not a sufficient
+explanation on its own.
+
+**What is not established.** No claim is made here that lateral displacement is *the*
+mechanism in general — it is what the data shows on this one pre-registered scene, whose
+geometry (a 0.08 m pre-registered lateral corridor, `W_center = rho/2`) was deliberately
+constructed to make lateral clearance marginal, and could plausibly amplify exactly this
+channel. A second scene with a different corridor width would be the natural check and has
+not been run. Nor has the other counterfactual from the previous section — replaying NONE's
+control *sequence* under ALPHA_SCALE's gains — which tests something different from the
+matched-state re-solve done here. `ARCHITECTURE.md` is unchanged; no mechanism has been
+written into it.
