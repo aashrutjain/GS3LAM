@@ -1659,3 +1659,130 @@ not been run. Nor has the other counterfactual from the previous section — rep
 control *sequence* under ALPHA_SCALE's gains — which tests something different from the
 matched-state re-solve done here. `ARCHITECTURE.md` is unchanged; no mechanism has been
 written into it.
+
+
+## Fourth Stage 2 bug found and fixed (2026-09-10) — hero-frame selection had exactly one candidate pose
+
+Found while tracing the Stage 1/2 boundary for a future-work paragraph about backbone
+swaps, then confirmed by a dedicated read-only investigation before anything was changed.
+Three coupled defects on the same code path in `vlm_safety_score.py`, all in
+`extract_canonical_view()`, plus the failure-reporting gap explicitly deferred in the
+2026-07-20 entry above. Fixed together because fixing any one alone leaves the path
+broken or, in the case of (2), newly broken.
+
+**Bug 1 — `params['w2c']` is not the camera path.** `extract_canonical_view()` did
+`params['w2c'].reshape(-1, 4, 4)` and looped over the result as a trajectory.
+`src/GS3LAM.py:481` is the **only** line in that file that assigns the key, and it
+assigns `first_frame_w2c` — a single (4,4). (Lines 125/336/340 look similar but write
+`curr_data`/`iter_data`, transient dicts consumed by `get_loss`, never saved.) Worse,
+because the dataset is built with `relative_pose=True` (`src/GS3LAM.py:63` →
+`src/datasets/basedataset.py:156,228`, "setting first pose in a sequence to identity"),
+that single matrix is the **identity**. NumPy reshapes 16 elements into `(1,4,4)`
+without complaint, so the loop ran exactly once, and "hero-frame selection" selected
+from a candidate set of size one: every object was scored from frame 0, or failed.
+
+The real per-frame poses were always there. `cam_unnorm_rots` (1,4,N) and `cam_trans`
+(1,3,N) are world-to-camera relative to frame 0, and they are genuinely persisted —
+`src/utils/logger.py:14-21` (`params2cpu`) converts every key with no whitelist, and
+`src/GaussianManager.py:54` explicitly excludes both from per-splat pruning, so they
+survive the run at full length. This mattered for scoping the fix: it is "read the right
+key", not "GS3LAM never saved it", so no Stage 1 change was needed.
+
+Now reconstructed in a new `load_per_frame_w2c()`, using the **estimated** poses
+(GS3LAM's own tracking output) rather than `gt_w2c_all_frames`, so Stage 2 does not
+depend on ground truth a real robot will not have. The quaternion → rotation step reuses
+`src/utils/gaussian_utils.build_rotation` rather than reimplementing the `(w,x,y,z)`
+convention — reimplementing a convention that already exists in the repo is precisely
+what produced the SemanticDecoder `state_dict` bug in "Two Stage 2 bugs" above.
+
+**Bug 2 — the `keyframe_time_indices` indirection.** The old code did
+`actual_image_idx = keyframe_indices[best_frame_idx]`. With the loop fixed,
+`best_frame_idx` is a dataset `time_idx`, which indexes `frame*.jpg` 1:1 under the
+committed config (`start=0`, `stride=1`, `configs/Replica/room0.py:50-52`). Keeping the
+indirection alongside the Bug 1 fix would have introduced a *new* wrong-image bug, which
+is why these were not applied separately. Now `image_paths[best_frame_idx]` directly,
+with an up-front check that `len(image_paths) >= num_frames` so a strided or offset run
+fails loudly instead of silently pairing every pose with the wrong image.
+
+**Bug 3 — intrinsics at the wrong resolution.** `params['intrinsics']`
+(`src/GS3LAM.py:480`) is saved at the *downsampled training* resolution:
+`src/datasets/basedataset.py:295` applies `datautils.scale_intrinsics(...)` before the
+dataset returns the frame. But this script loads the original `frame*.jpg` at native
+size, so the projected convex hull was landing in roughly the upper-left quadrant of the
+image it was masking — the VLM would have been shown the wrong pixels even after Bugs 1
+and 2 were fixed. New `load_native_resolution_K()` scales K back up, touching only
+fx/fy/cx/cy to mirror `datautils.scale_intrinsics:112-115` exactly.
+
+Upscaling K was chosen over downscaling the images so the VLM sees a full-resolution
+crop, which is the input quality the safety score is meant to reflect. The ratio is
+derived at runtime — actual on-disk frame size (read from the JPEG header via PIL, no
+decode) divided by `params['org_width']`/`org_height` — never hardcoded. Note the trap:
+despite the name, `org_width`/`org_height` are the *desired*, i.e. downsampled,
+dimensions (`src/GS3LAM.py:482-483` assigns them from
+`dataset_config["desired_image_width"/"desired_image_height"]`). For the committed
+Replica config the factor works out to exactly 2.0 × 2.0 (`configs/camera/replica.yaml`
+1200×680 against `configs/Replica/room0.py` 600×340), confirmed from those files, but
+nothing in the code depends on that number.
+
+**Bug 4 — silent, indistinguishable failure.** When no frame won, `best_frame_idx`
+stayed `-1` and fell through to `keyframe_indices[-1]` (NumPy negative indexing — the
+*last* keyframe), then died on `best_2d_points` being `None` inside the bare
+`except Exception`, emitting the same "projection/VLM error" line and the same 0.0 score
+as a dead API key. That is exactly the conflation flagged as "worth narrowing later" in
+the 2026-07-20 entry above, and it is why Bug 1 survived unnoticed. Now a typed
+`HeroFrameSelectionError` with a specific message, caught separately in `__main__` and
+reported as "HERO-FRAME SELECTION FAILED (not a VLM error)". The 0.0 conservative
+fail-safe is unchanged on both paths.
+
+**Verification — static only, as with every Stage 2 fix this summer.** There is still no
+real `params.npz`, `gsplat.ply`, `classifier.pth`, or `safety_gsplat.ply` anywhere on
+this machine (the negative-result search recorded under "Two Stage 2 bugs found" above
+still holds). **None of this has been executed against real Stage 1 output, because none
+exists.** What was actually done:
+
+- Control flow traced by reading: every `w2c` reference in `src/GS3LAM.py` (20 hits,
+  one assignment), every rebinding of `params` (`:135`, `:262`, `:362`, `:366`) and each
+  callee's key handling, and `save_params` → `params2cpu` → `np.savez`.
+- The reshape degeneracy was *executed*, not reasoned about: a (4,4) array
+  `.reshape(-1,4,4)` returns `(1,4,4)`, one loop iteration, no error.
+- The batched pose plumbing was checked against the reference per-frame construction at
+  `src/GS3LAM.py:415-419` (transcribed as a test oracle, since `build_rotation`
+  hardcodes `device='cuda'` and this box is CPU-only): **bit-identical, max abs
+  difference 0.0**, bottom rows `[0,0,0,1]`, rotation blocks orthonormal, translation
+  column equal to `cam_trans`. This tests the batching/indexing that was written here;
+  the quaternion convention itself comes from reusing the real function.
+- The K rescale was checked to be the exact inverse of `datautils.scale_intrinsics`:
+  native (600, 600, 599.5, 339.5) → saved (300, 300, 299.75, 169.75) → rescaled back to
+  (600, 600, 599.5, 339.5).
+- `python3 -m py_compile vlm_safety_score.py` passes.
+
+Not verified, and not claimable without real data: that a real run selects sensible hero
+frames, that `keyframe_time_indices[0] == 0` in a real npz, the actual on-disk resolution
+of the Replica jpgs, and whether the VLM's scores improve. The fix makes the code do what
+`ARCHITECTURE.md` §2.2 and the Method draft already said it did; it does not demonstrate
+that the output is good.
+
+**New finding, flagged not fixed:** `src/utils/gaussian_utils.py:24` hardcodes
+`device='cuda'` inside `build_rotation` — the same class of issue as the
+`SemanticDecoder.__init__` `.cuda()` finding fixed on 2026-07-18. Consequence: the fixed
+hero-frame path now requires CUDA, whereas the old (broken) path did not, since it never
+called `build_rotation`. On the A2000 dev machine this is harmless, but it is a real
+reduction in device flexibility. Not patched here because `gaussian_utils.py` is a
+Stage 1 file and CLAUDE.md holds Stage 1 as not needing structural changes; the call site
+raises `HeroFrameSelectionError` with the reason stated plainly rather than letting an
+opaque device-mismatch error escape from inside `build_rotation`. The one-line fix
+(`device=q.device`) is available if wanted — it would mirror the SemanticDecoder fix
+exactly.
+
+**Docs updated alongside the code**, so nothing is left asserting the old behavior:
+`CLAUDE.md`'s data contract, `ARCHITECTURE.md` §2.1 outputs and §2.2 step 1, and
+`GS3LAM_PAPER_SCOPE.md`'s Stage 2 paragraph. Deliberately **not** touched:
+`method_draft_v2_1.pdf`, `introduction_draft_v1.md`, `abstract_conclusion_draft_v1.md` —
+all three already describe the *intended* mechanism ("project into every recovered camera
+pose along the Stage 1 trajectory"), which the fixed code now actually implements, so
+they became accurate without edits rather than needing them.
+
+**Explicitly out of scope, deferred:** the runtime-cost characterization. The loop goes
+from 1 iteration to `num_frames` (~2000 for Replica room0) per object, which changes
+Stage 2's cost profile from trivial to the dominant offline cost. Left alone by decision;
+revisit when real timing matters.

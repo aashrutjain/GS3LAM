@@ -43,16 +43,27 @@ Three concurrent threads:
 
 Outputs:
 - `gsplat.ply` — geometry, color, opacity per splat.
-- `params.npz` — `w2c` (camera path) and `obj_dc` (16-D semantic vector per splat).
+- `params.npz` — the per-frame camera poses as `cam_unnorm_rots` (1,4,N) +
+  `cam_trans` (1,3,N), world-to-camera relative to frame 0, plus `obj_dc` (16-D
+  semantic vector per splat). `w2c` in this file is **not** the camera path: it is
+  the single first-frame matrix (`src/GS3LAM.py:481`), which is the identity because
+  the dataset is constructed with `relative_pose=True`. Reconstruct poses via
+  `src/utils/gaussian_utils.build_rotation`, mirroring `src/GS3LAM.py:415-419`.
+  Note also that the saved `intrinsics` are at the *downsampled training* resolution
+  (`org_width`/`org_height`), not the native frame resolution.
 
 Dataset: Replica (synthetic, zero motion blur), replacing TUM RGB-D `freiburg1_desk`
 from v1. Note Replica still has holes in under-mapped regions — not perfect ground truth.
 
 ### 2.2 Stage 2 — VLM Safety Rating
 
-1. **Hero frame selection** — for each semantic object, pick the camera pose that
-   maximizes on-screen pixel area (`size = w2c · H · K`). Reduces VLM calls to one per
-   object instead of one per keyframe.
+1. **Hero frame selection** — for each semantic object, project its splats into every
+   per-frame pose reconstructed from `cam_unnorm_rots`/`cam_trans` and pick the one
+   maximizing the projected bounding-box area. Reduces VLM calls to one per object
+   instead of one per keyframe. The chosen frame index is a dataset `time_idx`, which
+   indexes `frame*.jpg` directly under `start=0`/`stride=1` — not a position in
+   `keyframe_time_indices`. Intrinsics are rescaled from the saved training resolution
+   up to the native frame resolution before projecting.
 2. **Convex hull + background suppression** — isolate the object in its hero frame so
    the VLM reasons about the object's material/structure, not incidental scene context.
 3. **VLM query** — Gemini 1.5 Flash, `response_mime_type = "application/json"`, returns

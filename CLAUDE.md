@@ -57,7 +57,12 @@ put the conic backend through the same assertions.
 Don't change these shapes without updating `ARCHITECTURE.md` §2 to match.
 
 - `gsplat.ply` — 3D Gaussian splats: geometry, color, opacity (GS3LAM output)
-- `params.npz` — `w2c` (camera poses per frame), `obj_dc` (16-D semantic vector per splat)
+- `params.npz` — `cam_unnorm_rots` (1,4,N) + `cam_trans` (1,3,N), the per-frame
+  world-to-camera poses relative to frame 0, and `obj_dc` (16-D semantic vector per
+  splat). `w2c` is a single first-frame matrix (the identity, since the dataset is
+  built with `relative_pose=True`), **not** the camera path — reading it as one is a
+  fixed Stage 2 bug, see `PROGRESS.md`. Rebuild poses with
+  `src/utils/gaussian_utils.build_rotation`, as `src/GS3LAM.py:415-419` does.
 - `safety_gsplat.ply` — `gsplat.ply` + a grafted scalar `safety` column in [0, 1]
 
 ## Rules

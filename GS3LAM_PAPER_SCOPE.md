@@ -102,7 +102,9 @@ casting), which was dropped due to noisy sensor data and compounding pipeline er
 
 **Stage 2 — VLM Safety Assessment via Hero Frames**
 For each semantically labeled object, a single "hero frame" (the camera pose
-maximizing the object's on-screen pixel area) is selected, background-suppressed, and
+maximizing the object's on-screen pixel area, searched over every per-frame pose
+reconstructed from `params.npz`'s `cam_unnorm_rots`/`cam_trans` — `w2c` there holds
+only the first-frame matrix) is selected, background-suppressed, and
 sent to a VLM (Gemini) with a safety-auditor prompt. The VLM returns a continuous
 [0,1] safety scalar, grafted onto the object's splats. This is queried once per object,
 not once per frame, avoiding the latency of frame-by-frame VLM approaches.
