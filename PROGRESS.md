@@ -1786,3 +1786,65 @@ they became accurate without edits rather than needing them.
 from 1 iteration to `num_frames` (~2000 for Replica room0) per object, which changes
 Stage 2's cost profile from trivial to the dominant offline cost. Left alone by decision;
 revisit when real timing matters.
+
+
+## build_rotation device-flexibility fix (2026-09-10)
+
+Fixes the finding flagged, not patched, in the "Fourth Stage 2 bug" entry above.
+`src/utils/gaussian_utils.py:24` hardcoded `device='cuda'` when allocating the output
+rotation buffer, regardless of where its input quaternion lived. Same class of issue as
+`SemanticDecoder.__init__`'s `.cuda()` (fixed 2026-07-18), and fixed the same way:
+follow the caller's device instead of forcing one.
+
+**The change** (one line, plus a comment): `torch.zeros((q.size(0), 3, 3), device='cuda')`
+becomes `... device=q.device`.
+
+**Confirmed not a behavior change on the GPU path.** Every existing caller passes a
+quaternion that is already a CUDA tensor -- `src/GS3LAM.py:418`, `src/Mapper.py:220`,
+`src/GaussianManager.py:131`, `src/Evaluater.py:257`, `src/utils/logger.py:131`,
+`src/utils/gaussian_utils.py:148`, `visualizer/viser_utils.py:73,103` all read from
+`params[...]`, which `src/Mapper.py:111-113` wraps as `nn.Parameter(...).cuda()`. For
+those callers `q.device` *is* `cuda`, so the line allocates on exactly the device it
+used to hardcode. There was never a caller for which the old hardcoding was doing
+anything except what `q.device` now does -- which is why it was silent breakage off-GPU
+rather than a deliberate placement.
+
+**What this unblocks.** This is the same category of fix as the classifier one and has
+the same payoff: it moves hero-frame selection from *statically verified only* to
+*statically verified plus partially dynamically verified on non-CUDA machines*. Before
+this, `load_per_frame_w2c()` could not be executed here at all -- its correctness rested
+on reading the code plus comparing against a transcribed copy of `build_rotation` used
+as a test oracle, which by construction could not catch a mismatch between the real
+function and the transcription. Now the real functions run. Executed on this CPU-only
+sandbox (torch 2.13.0+cpu):
+
+- Real `build_rotation` on CPU: runs; identity quaternion maps to `I`; all outputs
+  orthonormal with `det = +1`; correctly normalizes an unnormalized input quaternion;
+  output device follows the input.
+- Real `load_per_frame_w2c()` on CPU against a synthetic `params` dict: returns one
+  `(4,4)` per frame, bottom rows `[0,0,0,1]`, rotation blocks orthonormal, translation
+  column equal to `cam_trans`, and **bit-identical (max abs diff 0.0)** to the per-frame
+  reference construction at `src/GS3LAM.py:415-419` -- this time with the real
+  `build_rotation` on both sides, not a transcription.
+- The missing-`cam_unnorm_rots` path raises `HeroFrameSelectionError`, not a generic
+  `KeyError`.
+
+**Still not verified, and unchanged by this:** everything that needs real Stage 1 output.
+No real `params.npz`, `gsplat.ply`, `classifier.pth`, or `safety_gsplat.ply` exists on
+this machine. The synthetic dict above exercises shapes, conventions and control flow --
+it says nothing about whether real reconstructed poses select sensible hero frames, and
+`extract_canonical_view()` as a whole still cannot be run end-to-end.
+
+**Consequential edits made alongside:**
+- `vlm_safety_score.py`: removed the `if not torch.cuda.is_available(): raise` guard that
+  `load_per_frame_w2c()` carried. That guard existed only to turn `build_rotation`'s
+  hardcoded-CUDA failure into a legible one; with the hardcoding gone it was the sole
+  remaining reason the path was GPU-only, so leaving it would have made the unblocking
+  claim above false. Device now selected as `cuda:0 if available else cpu`, matching
+  `load_and_classify_splats()`.
+- `src/cbf/ellipsoid.py`: its header said it reimplements the quaternion convention in
+  NumPy "rather than importing build_rotation, which is CUDA/torch-hardcoded". The CUDA
+  half is no longer true. Corrected to state the reason that still holds -- keeping
+  `src/cbf/` free of a torch dependency for the offline CLI and an eventual ROS2 node.
+  The reimplementation itself is unchanged; the design decision stands on the torch
+  dependency alone.

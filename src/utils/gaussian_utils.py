@@ -21,7 +21,11 @@ import torch.nn.functional as F
 def build_rotation(q):
     norm = torch.sqrt(q[:, 0] * q[:, 0] + q[:, 1] * q[:, 1] + q[:, 2] * q[:, 2] + q[:, 3] * q[:, 3])
     q = q / norm[:, None]
-    rot = torch.zeros((q.size(0), 3, 3), device='cuda')
+    # Follow the input's own device rather than forcing 'cuda'. On the GPU path q is
+    # already a CUDA tensor, so this resolves to exactly the device this line used to
+    # hardcode; off-GPU it now works instead of raising. Same device-flexibility fix as
+    # SemanticDecoder.__init__ (2026-07-18) -- see PROGRESS.md.
+    rot = torch.zeros((q.size(0), 3, 3), device=q.device)
     r = q[:, 0]
     x = q[:, 1]
     y = q[:, 2]

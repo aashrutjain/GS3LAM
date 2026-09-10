@@ -130,6 +130,8 @@ def load_per_frame_w2c(params):
     mirrored at src/Mapper.py:217-221), rather than reimplementing the (w,x,y,z)
     convention here. Reimplementing a convention that already exists in the repo is
     the same mistake that produced the earlier SemanticDecoder state_dict bug.
+
+    Runs on CPU or GPU: build_rotation follows its input's device as of 2026-09-10.
     """
     if 'cam_unnorm_rots' not in params or 'cam_trans' not in params:
         raise HeroFrameSelectionError(
@@ -142,21 +144,13 @@ def load_per_frame_w2c(params):
     cam_trans = np.asarray(params['cam_trans'])              # (1, 3, num_frames)
     num_frames = cam_unnorm_rots.shape[-1]
 
-    # build_rotation() hardcodes device='cuda' (src/utils/gaussian_utils.py:24) -- the
-    # same class of issue as the SemanticDecoder .cuda() finding in PROGRESS.md, but in
-    # a Stage 1 file, so it is flagged there rather than patched here. Fail with the
-    # reason stated plainly instead of with an opaque device-mismatch error thrown from
-    # inside build_rotation's tensor assignment.
-    if not torch.cuda.is_available():
-        raise HeroFrameSelectionError(
-            "Per-frame pose reconstruction requires CUDA: "
-            "src/utils/gaussian_utils.build_rotation() hardcodes device='cuda'. It is "
-            "reused deliberately rather than reimplementing the quaternion convention "
-            "-- see PROGRESS.md."
-        )
+    # build_rotation() follows its input's device as of the 2026-09-10 fix (it used to
+    # hardcode device='cuda'), so this path is no longer GPU-only. Pick the device the
+    # same way the rest of this script does.
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    q = torch.tensor(cam_unnorm_rots, dtype=torch.float32, device="cuda")[0].permute(1, 0)
-    t = torch.tensor(cam_trans, dtype=torch.float32, device="cuda")[0].permute(1, 0)
+    q = torch.tensor(cam_unnorm_rots, dtype=torch.float32, device=device)[0].permute(1, 0)
+    t = torch.tensor(cam_trans, dtype=torch.float32, device=device)[0].permute(1, 0)
 
     with torch.no_grad():
         # F.normalize then build_rotation, then R into the top-left block and t into the

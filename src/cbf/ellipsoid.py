@@ -3,9 +3,11 @@
 Mirrors the exact quaternion convention used by build_rotation() in
 src/utils/gaussian_utils.py: q = (w, x, y, z), unnormalized on disk, and the
 standard rotation-matrix formula. Reimplemented here in plain NumPy (rather
-than importing build_rotation, which is CUDA/torch-hardcoded) so this module
-can run without a GPU -- relevant for a lightweight offline eval CLI and,
+than importing build_rotation, which pulls in torch) so this module has no
+torch dependency at all -- relevant for a lightweight offline eval CLI and,
 eventually, a ROS2 node that shouldn't need to pull in torch just for this.
+(build_rotation was also CUDA-hardcoded when this was written; that was fixed
+on 2026-09-10, but the torch dependency is the reason that still stands.)
 
 Sigma = R S S^T R^T, S = diag(exp(log_scale)), matching standard 3DGS
 covariance reconstruction. A := Sigma^-1.
