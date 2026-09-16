@@ -1848,3 +1848,25 @@ it says nothing about whether real reconstructed poses select sensible hero fram
   `src/cbf/` free of a torch dependency for the offline CLI and an eventual ROS2 node.
   The reimplementation itself is unchanged; the design decision stands on the torch
   dependency alone.
+
+## Isaac Sim: headway-point CBF wrapper on Create 3 (2026-09-16)
+
+Isaac Sim 6.1 was installed on the RISL lab server. `src/cbf/` (at `d624f4a`, unchanged; Clarabel
+only) was wrapped for the iRobot Create 3, the TurtleBot4 base, via a headway point
+(L = 0.08 m ahead of the robot centre, pose-differenced velocity, De Luca et al. 2001 inversion
+to (v, ω)). On a single-hazard head-on scene:
+- The filtered run brakes early and swerves away from the hazard's offset side (max lateral
+  departure 0.54 m), keeps the body outside its keep-out (+0.073 m), and reaches the goal
+  (time ×1.22).
+- The unfiltered run drives straight through the hazard.
+
+**This is an approximation, not a demonstration that the CBF's formal guarantee holds on real
+differential-drive dynamics.** The headway point carries a non-vanishing offset, and velocities
+are finite-differenced from a robot that doesn't track commands exactly. The tracked point
+itself sat ~1 mm inside its inflated keep-out for 166 steps.
+
+Also found: `scipy_slsqp` fails `test_step0_narrow_corridor_gamma1_pathological_slowdown` on
+scipy 1.17.0 (passes on 1.15.2); Clarabel passes all 22 tests.
+
+Full detail (setup choices, trajectories, Create 3 calibration findings, caveats):
+`~/isaacsim/PROGRESS.md` on the lab server.
