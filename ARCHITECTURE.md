@@ -26,7 +26,7 @@ Three sub-questions structure the project:
 Three stages. The third is the current focus — mostly built and smoke-tested, see 2.3.
 
 1. **Semantic Gaussian Splatting** (done) — GS3LAM produces a semantically labeled 3DGS map.
-2. **VLM Safety Rating via Hero Frames** (done) — per-object safety scores grafted onto the splats.
+2. **VLM Safety Rating via Hero Frames** (done) — per-semantic-class safety scores grafted onto the splats (see 2.2).
 3. **Costmap + CBF Tuning** (mostly built) — the safety-annotated map drives a real CBF on a TurtleBot4.
 
 ### 2.1 Stage 1 — GS3LAM
@@ -57,15 +57,24 @@ from v1. Note Replica still has holes in under-mapped regions — not perfect gr
 
 ### 2.2 Stage 2 — VLM Safety Rating
 
-1. **Hero frame selection** — for each semantic object, project its splats into every
+**Scoring is per semantic class, not per object instance.** Stage 1 supervision is
+Replica's `semantic_class_*.png` maps (`src/datasets/replica.py`), and
+`vlm_safety_score.py` groups splats by decoded class id. Every step below runs once per
+semantic class present in the scene: multiple physical objects sharing a class label
+(e.g., two separate chairs) share one hero frame, one VLM query, and one score, painted
+onto all of their splats. "Object" elsewhere in this doc, in a Stage 2 scoring context,
+means this class-level grouping.
+
+1. **Hero frame selection** — for each semantic class, project all of its splats into every
    per-frame pose reconstructed from `cam_unnorm_rots`/`cam_trans` and pick the one
-   maximizing the projected bounding-box area. Reduces VLM calls to one per object
+   maximizing the projected bounding-box area. Reduces VLM calls to one per class
    instead of one per keyframe. The chosen frame index is a dataset `time_idx`, which
    indexes `frame*.jpg` directly under `start=0`/`stride=1` — not a position in
    `keyframe_time_indices`. Intrinsics are rescaled from the saved training resolution
    up to the native frame resolution before projecting.
-2. **Convex hull + background suppression** — isolate the object in its hero frame so
-   the VLM reasons about the object's material/structure, not incidental scene context.
+2. **Convex hull + background suppression** — isolate the class's splats in its hero
+   frame (one hull over all of them) so the VLM reasons about material/structure, not
+   incidental scene context.
 3. **VLM query** — Gemini 1.5 Flash, `response_mime_type = "application/json"`, returns
    `{"safety_score": float}` in [0,1]. Prompt frames the VLM as a physical safety
    auditor for a 3kg wheeled robot (TurtleBot4): 1.0 = safe to drive near, 0.0 = lethal
@@ -73,7 +82,7 @@ from v1. Note Replica still has holes in under-mapped regions — not perfect gr
 4. **Splat augmentation** — `numpy.lib.recfunctions` grafts the score onto `gsplat.ply`
    as a new `safety` column → `safety_gsplat.ply`.
 
-VLM latency is 1–3s/call, but it's offline and per-object, not per-frame, so it doesn't
+VLM latency is 1–3s/call, but it's offline and per-class, not per-frame, so it doesn't
 touch the control loop.
 
 ### 2.3 Stage 3 — Costmap + CBF (current focus, mostly built)
@@ -246,10 +255,10 @@ any of the following — keep this table current as new papers show up:
 |---|---|---|
 | SAFER-Splat (arXiv:2409.09868) | Distance-based CBF per splat, purely geometric, no semantic differentiation | No VLM anywhere; this project adds the semantic safety layer on top of a geometric CBF |
 | Tscholl et al. (arXiv:2509.14421) | Collision-cone CBF, purely geometric — the word "semantic" doesn't appear in the paper | This is the Stage 3 geometric primitive we build on, not a competing approach |
-| AlphaAdj (Chen & Chandra, arXiv:2603.21142) | Scene-level VLM risk scalar from egocentric RGB, queried asynchronously at a fixed cadence (2 Hz), mapped onto the CBF's class-K gain; ~0.7s query latency managed via staleness-gated fusion and a speed-aware dynamic cap | Uses the *same lever* as `ALPHA_SCALE` (VLM risk modulating the class-K gain) — the real differences: per-object judgments vs. one scene-level scalar per view; persistent 3D map attribute vs. transient per-view estimate; offline hero-frame queries (zero online VLM latency) vs. online queries (latency-managed but paid every cycle) |
+| AlphaAdj (Chen & Chandra, arXiv:2603.21142) | Scene-level VLM risk scalar from egocentric RGB, queried asynchronously at a fixed cadence (2 Hz), mapped onto the CBF's class-K gain; ~0.7s query latency managed via staleness-gated fusion and a speed-aware dynamic cap | Uses the *same lever* as `ALPHA_SCALE` (VLM risk modulating the class-K gain) — the real differences: per-semantic-class judgments (§2.2) vs. one scene-level scalar per view; persistent 3D map attribute vs. transient per-view estimate; offline hero-frame queries (zero online VLM latency) vs. online queries (latency-managed but paid every cycle) |
 | GS3LAM | Semantic SLAM — geometry + class labels, no safety/hazard scoring at all | This project's Stage 1 front end; the safety layer is added in Stage 2 |
 
-**The actual novel contribution:** a VLM-derived, per-object semantic safety scalar
+**The actual novel contribution:** a VLM-derived, per-semantic-class safety scalar (§2.2)
 grafted directly onto the 3D Gaussian representation as a first-class splat attribute,
 via a hero-frame mechanism that avoids per-frame VLM cost. Nothing in the table above
 does this. Keep this distinction sharp in any write-up — it's the thing that makes the

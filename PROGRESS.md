@@ -1037,19 +1037,19 @@ survived every later commit untouched.
 CLAUDE.md Rules).** `vlm_safety_score.py`'s `__main__` wrapped `extract_canonical_view`
 + `query_vlm_safety` in a bare `except Exception` that set `safety_dictionary[obj_id] =
 1.0` ("Default to safe if it fails"). Because `broadcast_scores_and_save` initializes
-`safety_array = np.zeros(...)` and paints only queried objects, this produced an
+`safety_array = np.zeros(...)` and paints only queried classes, this produced an
 inverted fail-safe:
 
 - Unqueried splats defaulted to `0.0` (most conservative / "lethal") — the documented
   convention, surfaced by `ply_io.py`'s `ambiguous_zero_mask` / `ZeroSafetyPolicy`.
-- A queried object whose call *failed* (projection error, API failure, or JSON parse
+- A queried class whose call *failed* (projection error, API failure, or JSON parse
   error) defaulted to `1.0` (most permissive / "completely safe") — telling the CBF to
   drive over an object we had no valid judgment for.
 
-An object important enough to be audited defaulted, on failure, to the most permissive
-score, while an object never looked at defaulted to the most conservative one — the two
+A class important enough to be audited defaulted, on failure, to the most permissive
+score, while a class never looked at defaulted to the most conservative one — the two
 "no valid score" paths pointed in opposite directions, and the dangerous one applied to
-exactly the objects the system had chosen to scrutinize. Changed the failure default
+exactly the classes the system had chosen to scrutinize. Changed the failure default
 from `1.0` to `0.0` so "no valid score" is uniformly conservative. `f_min` in
 `semantic_weighting.alpha_gain_per_splat` keeps the barrier active (not zeroed) at
 safety 0.0, so this is consistent with the existing zero-safety handling. Rationale
@@ -1058,14 +1058,15 @@ changes are research decisions. Secondary, not changed: the bare `except Excepti
 conflates geometry-projection failures with VLM/API failures; worth narrowing later,
 but it's orthogonal to the default-value inversion.
 
-**Noted, not changed — top-5 object cap is scaffolding.** The same `__main__` audits
+**Noted, not changed — top-5 class cap is scaffolding.** The same `__main__` audits
 only the five largest object classes (`np.argsort(-counts)[:5]`, comment "Filtering
 noisy data..."). `git blame` confirms it is first-pass demo-driver code, lives only in
-`__main__` (every library function is per-object with no cap), and contradicts the
-"one query per object" method described in `ARCHITECTURE.md` §2.2 and the paper. Left
+`__main__` (every library function is per-class with no cap), and contradicts the
+"one query per class" method described in `ARCHITECTURE.md` §2.2 and the paper (which
+words it as per-object; see the 2026-09-14 class-vs-instance entry below). Left
 in place for now — it's not a recorded scope decision, and the fix (drop the cap, or
 make it an explicit CLI arg) belongs with a real Stage 1/2 run, not this doc pass. The
-Method draft describes the intended per-object behavior and excludes the cap.
+Method draft describes the intended uncapped behavior and excludes the cap.
 
 ## ARCHITECTURE.md §5: Gaussian World Model future-work bullet rewritten (2026-07-26)
 
@@ -1679,7 +1680,7 @@ because the dataset is built with `relative_pose=True` (`src/GS3LAM.py:63` →
 `src/datasets/basedataset.py:156,228`, "setting first pose in a sequence to identity"),
 that single matrix is the **identity**. NumPy reshapes 16 elements into `(1,4,4)`
 without complaint, so the loop ran exactly once, and "hero-frame selection" selected
-from a candidate set of size one: every object was scored from frame 0, or failed.
+from a candidate set of size one: every class was scored from frame 0, or failed.
 
 The real per-frame poses were always there. `cam_unnorm_rots` (1,4,N) and `cam_trans`
 (1,3,N) are world-to-camera relative to frame 0, and they are genuinely persisted —
@@ -1783,7 +1784,7 @@ pose along the Stage 1 trajectory"), which the fixed code now actually implement
 they became accurate without edits rather than needing them.
 
 **Explicitly out of scope, deferred:** the runtime-cost characterization. The loop goes
-from 1 iteration to `num_frames` (~2000 for Replica room0) per object, which changes
+from 1 iteration to `num_frames` (~2000 for Replica room0) per class, which changes
 Stage 2's cost profile from trivial to the dominant offline cost. Left alone by decision;
 revisit when real timing matters.
 
@@ -1848,6 +1849,31 @@ it says nothing about whether real reconstructed poses select sensible hero fram
   `src/cbf/` free of a torch dependency for the offline CLI and an eventual ROS2 node.
   The reimplementation itself is unchanged; the design decision stands on the torch
   dependency alone.
+
+## Doc correction: hero-frame scoring is per semantic class, not per object instance (2026-09-14)
+
+**Documentation-only correctness fix. No design or scope change; nothing about scoring
+behavior changes, and no code was touched.** `ARCHITECTURE.md` and this file described
+hero-frame scoring as running "for each semantic object" / "per object", implying
+per-instance identity. The code does not do that, and never has: Stage 1 supervision is
+Replica's `semantic_class_*.png` maps (`src/datasets/replica.py:46`), and
+`vlm_safety_score.py` groups splats by decoded class id (`class_ids == target_class_id`
+in `extract_canonical_view()` and `broadcast_scores_and_save()`). Scoring therefore runs
+once per semantic class present in the scene. Two distinct chairs sharing one class label
+get one hero frame (chosen by the bounding box of all their splats together), one convex
+hull enclosing both, one VLM query, and one score painted onto both.
+
+The clear statement now lives at the top of `ARCHITECTURE.md` §2.2. Instance-implying
+wording in the §2 pipeline overview's Stage 2 line, §2.2 steps 1–2, the latency note, the AlphaAdj row, and the
+novel-contribution statement was changed to class-level wording that points back to §2.2.
+In this file, the 2026-07-20 fail-safe/top-5-cap entry and the 2026-09-10 fourth-bug entry
+said "object" where the code operates on a class; those words now say "class".
+
+Deliberately **not** changed here: the 2026-07-18 real-data VLM consistency check, which
+genuinely scored hand-cropped *individual* objects, so its "per object" wording is
+accurate. It does mean that check is also a proxy on this axis, since a real pipeline crop
+for a multi-instance class would cover every instance at once. The paper drafts repeat the
+per-object claim and were left untouched pending a separate decision.
 
 ## Isaac Sim: headway-point CBF wrapper on Create 3 (2026-09-16)
 
